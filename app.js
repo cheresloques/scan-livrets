@@ -3,7 +3,7 @@
    → version couleur + version lecture + illustrations → Google Drive. */
 'use strict';
 
-const VERSION = '1.3.0';
+const VERSION = '1.4.0';
 const CFG = window.SCAN_CONFIG || {};
 const $ = (s) => document.querySelector(s);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -137,7 +137,14 @@ const small = document.createElement('canvas');
 const sctx = small.getContext('2d', { willReadFrequently: true });
 let track = null, wakeLock = null;
 
+let loopStarted = false, cameraStarting = false;
+function stopCamera() {
+  try { const s = video.srcObject; if (s) s.getTracks().forEach(t => t.stop()); } catch { /* */ }
+  video.srcObject = null; track = null;
+}
 async function startCamera() {
+  if (cameraStarting) return;
+  cameraStarting = true;
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: false,
@@ -156,14 +163,41 @@ async function startCamera() {
     hint('Chargement de l\'analyse d\'image…');
     await detector.ready;
     hint('Cadre le livret entier');
-    requestAnimationFrame(loop);
+    track.addEventListener('ended', () => { if (document.visibilityState === 'visible') restartCamera(); });
+    if (!loopStarted) { loopStarted = true; requestAnimationFrame(loop); }
   } catch (err) {
     console.error(err);
     hint(err && err.name === 'NotAllowedError'
       ? 'Autorise la caméra dans les réglages du navigateur, puis recharge'
       : 'Caméra indisponible : ' + (err.message || err), 'stop');
+  } finally {
+    cameraStarting = false;
   }
 }
+/* Au retour dans l'appli, Android a souvent coupé la caméra : on la relance */
+function restartCamera() {
+  stopCamera();
+  if (torchOn) { torchOn = false; setToggle($('#torchBtn'), false); }
+  hint('Reprise de la caméra…');
+  startCamera();
+}
+let lastFrameAt = performance.now();
+(function watchFrames() {
+  // compte les vraies images reçues de la caméra (le temps de la vidéo peut avancer sur une image figée)
+  if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+    const tick = () => { lastFrameAt = performance.now(); video.requestVideoFrameCallback(tick); };
+    video.requestVideoFrameCallback(tick);
+  } else {
+    let lastT = -1;
+    setInterval(() => { if (video.currentTime !== lastT) { lastT = video.currentTime; lastFrameAt = performance.now(); } }, 300);
+  }
+})();
+setInterval(() => {
+  if (document.visibilityState !== 'visible' || cameraStarting || !loopStarted) return;
+  const dead = !track || track.readyState !== 'live';
+  // caméra coupée, ou plus aucune image depuis 2 s : on relance
+  if (dead || performance.now() - lastFrameAt > 2000) { lastFrameAt = performance.now(); restartCamera(); }
+}, 700);
 function waitVideo() {
   return new Promise(r => {
     const ok = () => video.videoWidth > 0 ? r() : setTimeout(ok, 50);
@@ -173,7 +207,12 @@ function waitVideo() {
 async function keepAwake() {
   try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch { /* */ }
 }
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') keepAwake(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  keepAwake();
+  if (!track || track.readyState !== 'live' || track.muted || video.paused) restartCamera();
+  else { video.play().catch(() => restartCamera()); lastFrameAt = performance.now(); }
+});
 
 /* Correspondance coordonnées vidéo (0..1) → écran (object-fit: cover) */
 function mapper() {
@@ -368,6 +407,7 @@ async function capture(det, fp, plain) {
       locked: plain ? null : (S.livret.size || null),
       textMode: S.set.textMode,
       maxLong: plain ? 4000 : 3000,
+      margin: plain ? 0 : 0.04,
       plain: !!plain
     };
     processor.req({ type: 'process', img, quad, opts }, [img.data.buffer])

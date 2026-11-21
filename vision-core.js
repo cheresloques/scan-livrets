@@ -343,9 +343,11 @@
   V.processPage = function (cv, img, quadNorm, opts) {
     opts = opts || {};
     const W = img.width, H = img.height;
-    // léger retrait vers le centre pour ne pas garder le bord de la table
+    // marge autour de la page pour ne jamais couper de lettres (un bout de table est sans importance)
     const cx = quadNorm.reduce((a, p) => a + p[0], 0) / 4, cy = quadNorm.reduce((a, p) => a + p[1], 0) / 4;
-    const qpx = quadNorm.map(([x, y]) => [(x + (cx - x) * 0.006) * W, (y + (cy - y) * 0.006) * H]);
+    const k = 1 + (opts.margin == null ? 0.04 : opts.margin);
+    const clamp = (v) => Math.min(1, Math.max(0, v));
+    const qpx = quadNorm.map(([x, y]) => [clamp(cx + (x - cx) * k) * W, clamp(cy + (y - cy) * k) * H]);
     const size = V.outputSize(qpx, opts.locked, opts.maxLong || 3000);
     const src = cv.matFromImageData(img);
     const color = V._warpMat(cv, src, qpx, size.w, size.h);
@@ -396,10 +398,12 @@
     const images = opts.plain ? [] : V.findIllustrations(cv, color, small, bgSmall);
     {
       // éclairage : fond par tuiles, en ignorant les tuiles couvertes par une illustration
-      const nx = 6, ny = 8, vals = [];
-      const tw = Math.floor(bw / nx), th = Math.floor(bh / ny);
+      // on ignore la marge ajoutée autour de la page (bout de table)
+      const nx = 6, ny = 8, vals = [], mg = 0.05;
+      const ox = Math.round(bw * mg), oy = Math.round(bh * mg);
+      const tw = Math.floor(bw * (1 - 2 * mg) / nx), th = Math.floor(bh * (1 - 2 * mg) / ny);
       for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
-        const tx = i / nx, ty = j / ny, tW = 1 / nx, tH = 1 / ny;
+        const tW = (1 - 2 * mg) / nx, tH = (1 - 2 * mg) / ny, tx = mg + i * tW, ty = mg + j * tH;
         let cover = 0;
         for (const b of images) {
           const ox = Math.max(0, Math.min(tx + tW, b.x + b.w) - Math.max(tx, b.x));
@@ -407,7 +411,7 @@
           cover += (ox * oy) / (tW * tH);
         }
         if (cover > 0.25) continue;
-        const r = bgSmall.roi(new cv.Rect(i * tw, j * th, tw, th));
+        const r = bgSmall.roi(new cv.Rect(ox + i * tw, oy + j * th, tw, th));
         vals.push(cv.mean(r)[0]);
         r.delete();
       }
