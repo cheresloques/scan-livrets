@@ -3,7 +3,7 @@
    → version couleur + version lecture + illustrations → Google Drive. */
 'use strict';
 
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 const CFG = window.SCAN_CONFIG || {};
 const $ = (s) => document.querySelector(s);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -318,15 +318,16 @@ function nextNum() {
   return S.pages.reduce((m, p) => Math.max(m, p.num), 0) + 1;
 }
 
-async function capture(det, fp) {
+async function capture(det, fp, plain) {
   AC.busy = true;
   AC.armed = false;
   AC.captureFp = fp || null;
   try {
     const vw = video.videoWidth, vh = video.videoHeight;
     let quad = det && det.quad, edgeTouch = det ? det.edgeTouch : false;
-    const gutter = !!(det && det.gutter && !S.frameLock);
+    const gutter = !!(det && det.gutter && !S.frameLock && !plain);
     if (S.frameLock && S.lockedQuad) { quad = S.lockedQuad; edgeTouch = false; }
+    if (plain) { quad = [[0, 0], [1, 0], [1, 1], [0, 1]]; edgeTouch = false; }
     if (!quad) { quad = [[0, 0], [1, 0], [1, 1], [0, 1]]; edgeTouch = false; }
 
     const fc = document.createElement('canvas');
@@ -347,7 +348,7 @@ async function capture(det, fp) {
       id: 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
       livret: S.livret.name, num, created: Date.now(),
       status: 'busy', qRedo: [], qWarn: [], ocrRedo: [], ocrWarn: [], kept: false,
-      images: [], ocr: null, edgeTouch, gutter,
+      images: [], ocr: null, edgeTouch, gutter, plain: !!plain,
       upload: { state: 'none', fileIds: {}, prev: old ? Object.assign({}, old.upload.prev || {}, old.upload.fileIds || {}) : null },
       previewUrl: small.toDataURL('image/jpeg', 0.6)
     };
@@ -364,9 +365,10 @@ async function capture(det, fp) {
     renderCounts();
 
     const opts = {
-      locked: S.livret.size || null,
+      locked: plain ? null : (S.livret.size || null),
       textMode: S.set.textMode,
-      maxLong: 3000
+      maxLong: plain ? 4000 : 3000,
+      plain: !!plain
     };
     processor.req({ type: 'process', img, quad, opts }, [img.data.buffer])
       .then(res => onProcessed(page, res))
@@ -410,14 +412,15 @@ async function onProcessed(page, res) {
     medianSharp: others.length >= 3 ? median(others.map(p => p.metrics.sharpness)) : 0,
     prevFp: prev ? prev.metrics.fp : null,
     edgeTouch: page.edgeTouch,
-    gutter: page.gutter
+    gutter: page.gutter,
+    plain: page.plain
   };
   const j = Vision.judge(res.metrics, ctx);
   page.qRedo = j.redo; page.qWarn = j.warn;
   computeStatus(page);
 
   // le premier bon cadrage fixe le format du livret (recadrage identique ensuite)
-  if (!S.livret.size && page.status !== 'redo') {
+  if (!S.livret.size && page.status !== 'redo' && !page.plain) {
     S.livret.size = res.size;
     S.livret.aspect = res.metrics.aspect;
     await DB.put('livrets', S.livret);
@@ -492,7 +495,7 @@ async function pumpOcr() {
         const words = (r.data.words || []).filter(x => x.text && x.text.trim().length > 1);
         const conf = Math.round(r.data.confidence || 0);
         p.ocr = { conf, words: words.length, text: r.data.text || '' };
-        const j = Vision.judgeOcr(conf, words.length);
+        const j = p.plain ? { redo: [], warn: [] } : Vision.judgeOcr(conf, words.length);
         const before = p.status;
         p.ocrRedo = j.redo; p.ocrWarn = j.warn;
         computeStatus(p);
@@ -606,24 +609,52 @@ function markForUpload(p) {
 }
 
 let upBusy = false, reportDirty = false;
+
+/* Fichiers Drive à supprimer (page supprimée ou remplacée), gardés même si l'appli est fermée */
+const TrashQ = {
+  key() { return 'trash.' + (S.livret ? S.livret.name : ''); },
+  all() { return LS.get(this.key(), []); },
+  add(ids) { const ids2 = ids.filter(Boolean); if (ids2.length) LS.set(this.key(), [...new Set(this.all().concat(ids2))]); },
+  drop(id) { LS.set(this.key(), this.all().filter(x => x !== id)); }
+};
+function pageFileIds(p) {
+  const ids = Object.assign({}, (p.upload && p.upload.prev) || {}, (p.upload && p.upload.fileIds) || {});
+  return [ids.color, ids.text, ids.ocr, ...(ids.images || []), ...(((p.upload || {}).prev || {}).images || [])].filter(Boolean);
+}
+
 async function pumpUploads() {
   renderDrive();
   if (upBusy || !Drive.ok() || !navigator.onLine) return;
   upBusy = true;
   try {
+    // 1) ménage en attente
+    for (const id of TrashQ.all()) {
+      try { await Drive.trash(id); TrashQ.drop(id); reportDirty = true; }
+      catch (e) { if (e.auth) return; console.warn('corbeille', e); break; }
+    }
+    // 2) envois
     for (;;) {
       const p = S.pages.find(x => x.upload.state === 'pending' && uploadable(x));
       if (!p) break;
-      p.upload.state = 'sending'; renderDrive(); renderStrip();
+      p.upload.state = 'sending'; p.upload.dirty = false; renderDrive(); renderStrip();
+      const numAtStart = p.num;
       try {
         await uploadPage(p);
         reportDirty = true;
+        // modifiée pendant l'envoi (numéro, illustrations…) : on renvoie
+        if (p.num !== numAtStart || p.upload.dirty) p.upload.state = 'pending';
+        else p.upload.state = 'done';
       } catch (e) {
         console.warn('upload', e);
         if (e.auth) { p.upload.state = 'pending'; break; }
         if (e.status === 404 && S.livret.folders) { S.livret.folders = null; p.upload.state = 'pending'; continue; }
         p.upload.state = 'error'; p.upload.error = String(e.message || e);
-        toast({ id: 'up-' + p.id, kind: 'warn', title: `Envoi de la page ${p.num} impossible`, text: 'Nouvel essai avec « Envoyer sur Drive »', ttl: 5000 });
+        toast({ id: 'up-' + p.id, kind: 'warn', title: `Envoi de la page ${p.num} impossible`, text: 'Nouvel essai avec « Synchroniser »', ttl: 5000 });
+      }
+      if (!S.pages.includes(p)) {
+        // supprimée pendant l'envoi : ses fichiers partent à la corbeille
+        TrashQ.add(pageFileIds(p));
+        continue;
       }
       await savePage(p);
       renderStrip();
@@ -638,19 +669,84 @@ async function pumpUploads() {
 async function uploadPage(p) {
   const f = await Drive.folders(S.livret);
   const n = pad(p.num);
-  const ids = Object.assign({}, p.upload.fileIds || {});
+  const ids = p.upload.fileIds = Object.assign({}, p.upload.fileIds || {});
   const prev = p.upload.prev || {};
   ids.color = await Drive.upload(`p${n}.jpg`, p.color, f.couleur, ids.color || prev.color);
   ids.text = await Drive.upload(`p${n}.${p.textExt || 'jpg'}`, p.text, f.lecture, ids.text || prev.text);
-  for (const id of [...(ids.images || []), ...(prev.images || [])]) await Drive.trash(id);
+  const oldImages = [...(ids.images || []), ...(prev.images || [])];
   ids.images = [];
+  for (const id of oldImages) await Drive.trash(id);
   for (let i = 0; i < p.images.length; i++) {
     ids.images.push(await Drive.upload(`p${n}-img${i + 1}.jpg`, p.images[i].blob, f.images, null));
   }
   if (p.ocr && p.ocr.text) {
     ids.ocr = await Drive.upload(`p${n}.txt`, new Blob([p.ocr.text], { type: 'text/plain' }), f.texte, ids.ocr || prev.ocr);
+  } else if (ids.ocr || prev.ocr) {
+    await Drive.trash(ids.ocr || prev.ocr); delete ids.ocr;
   }
-  p.upload = { state: 'done', fileIds: ids, at: Date.now() };
+  delete p.upload.prev;
+  p.upload.at = Date.now();
+}
+
+/* Synchroniser : le Drive devient le reflet exact des pages gardées dans l'appli */
+async function syncDrive() {
+  if (!Drive.ok()) { await driveConnect(); if (!Drive.ok()) return; }
+  const btn = $('#syncBtn');
+  btn.disabled = true; btn.textContent = 'Synchronisation…';
+  try {
+    while (upBusy) await sleep(300);
+    upBusy = true;
+    S.livret.folders = null; // revérifie les dossiers
+    const f = await Drive.folders(S.livret);
+    const expected = new Map(); // id -> nom attendu
+    for (const p of S.pages) {
+      if (!uploadable(p)) continue;
+      const ids = p.upload.fileIds || {}, n = pad(p.num);
+      if (ids.color) expected.set(ids.color, { p, name: `p${n}.jpg` });
+      if (ids.text) expected.set(ids.text, { p, name: `p${n}.${p.textExt || 'jpg'}` });
+      if (ids.ocr) expected.set(ids.ocr, { p, name: `p${n}.txt` });
+      (ids.images || []).forEach((id, i) => expected.set(id, { p, name: `p${n}-img${i + 1}.jpg` }));
+    }
+    const seen = new Set();
+    let trashed = 0;
+    for (const folder of [f.couleur, f.lecture, f.images, f.texte]) {
+      let token = '';
+      do {
+        const q = encodeURIComponent(`'${folder}' in parents and trashed=false`);
+        const r = await Drive.call(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=nextPageToken,files(id,name)&pageSize=1000${token ? '&pageToken=' + token : ''}`);
+        for (const file of r.files || []) {
+          const exp = expected.get(file.id);
+          if (!exp) { await Drive.trash(file.id); trashed++; continue; }
+          seen.add(file.id);
+          if (exp.name !== file.name) exp.p.upload.state = 'pending';
+        }
+        token = r.nextPageToken || '';
+      } while (token);
+    }
+    let resend = 0;
+    for (const p of S.pages) {
+      if (!uploadable(p)) continue;
+      const ids = p.upload.fileIds || {};
+      const missing = [ids.color, ids.text, ...(ids.images || [])].some(id => !id || !seen.has(id)) || (p.ocr && p.ocr.text && !(ids.ocr && seen.has(ids.ocr)));
+      if (missing || p.upload.state !== 'done') {
+        if (missing) { ids.color = seen.has(ids.color) ? ids.color : null; ids.text = seen.has(ids.text) ? ids.text : null; ids.ocr = seen.has(ids.ocr) ? ids.ocr : null; ids.images = (ids.images || []).filter(id => seen.has(id)); }
+        p.upload.state = 'pending'; resend++;
+        await savePage(p);
+      }
+    }
+    LS.set(TrashQ.key(), []);
+    reportDirty = true;
+    upBusy = false;
+    toast({ id: 'sync', kind: 'ok', title: 'Synchronisation lancée', text: `${trashed} fichier${trashed > 1 ? 's' : ''} en trop retiré${trashed > 1 ? 's' : ''}, ${resend} page${resend > 1 ? 's' : ''} à renvoyer`, ttl: 5000 });
+    await pumpUploads();
+  } catch (e) {
+    console.warn('sync', e);
+    toast({ id: 'sync', kind: 'redo', title: 'Synchronisation impossible', text: e.message, ttl: 6000 });
+  } finally {
+    upBusy = false;
+    btn.disabled = false; btn.textContent = 'Synchroniser avec Drive';
+    renderDrive(); renderStrip();
+  }
 }
 
 async function uploadReport() {
@@ -819,6 +915,7 @@ function renderPageSheet(p) {
     return el;
   }));
   $('#keepOne').hidden = p.status !== 'redo' || p.kept;
+  $('#plainNote').hidden = !p.plain;
   const m = Object.assign({}, p.metrics || {}); delete m.fp;
   $('#pageMetrics').textContent = JSON.stringify(m, null, 1);
 }
@@ -847,6 +944,7 @@ function renderBoxes(p) {
 }
 async function changed(p) {
   if (p.upload.state === 'done' || p.upload.state === 'error') p.upload.state = 'pending';
+  if (p.upload.state === 'sending') p.upload.dirty = true;
   await savePage(p);
   renderPageSheet(p); renderStrip(); pumpUploads();
 }
@@ -922,11 +1020,8 @@ $('#deleteOne').onclick = async () => {
   S.pages = S.pages.filter(x => x !== p);
   dismissToast(p.id);
   await DB.del('pages', p.id);
-  if (p.upload.state === 'done' && Drive.ok()) {
-    const ids = p.upload.fileIds || {};
-    for (const id of [ids.color, ids.text, ids.ocr, ...(ids.images || [])].filter(Boolean)) Drive.trash(id).catch(() => {});
-    reportDirty = true;
-  }
+  if (p.upload.state !== 'sending') { TrashQ.add(pageFileIds(p)); reportDirty = true; }
+  pumpUploads();
   closeSheets(); renderStrip(); renderCounts(); renderDrive();
 };
 $('#pageNum').onchange = async (e) => {
@@ -975,11 +1070,7 @@ function renderMenu() {
 $('#menuBtn').onclick = () => { showSheet('#menuSheet'); renderMenu(); };
 $('#livretBtn').onclick = () => { showSheet('#menuSheet'); renderMenu(); };
 $('#retakeAll').onclick = () => setRetake(S.pages.filter(p => p.status === 'redo' && !p.kept).map(p => p.num));
-$('#uploadAll').onclick = async () => {
-  S.pages.forEach(p => { if (p.upload.state === 'error' || (p.upload.state === 'none' && uploadable(p))) p.upload.state = 'pending'; });
-  if (!Drive.ok()) { await driveConnect(); }
-  pumpUploads(); renderMenu();
-};
+$('#syncBtn').onclick = () => syncDrive();
 $('#exportZip').onclick = exportZip;
 $('#livretSelect').onchange = (e) => switchLivret(e.target.value);
 $('#addLivret').onclick = () => {
@@ -1026,6 +1117,13 @@ async function driveConnect() {
 $('#driveBtn').onclick = () => { if (S.set.clientId && Drive.ok()) { showSheet('#menuSheet'); renderMenu(); } else driveConnect(); };
 
 /* ---------- Commandes caméra ---------- */
+$('#plainBtn').onclick = () => {
+  ensureAudio();
+  capture(null, null, true);
+  AC.armed = false; AC.captureFp = null;
+  setTimeout(() => { AC.armed = !S.set.auto; }, 50);
+  toast({ id: 'plain', kind: 'ok', title: 'Photo simple prise', text: 'Envoyée telle quelle, sans recadrage', ttl: 2500 });
+};
 $('#shutter').onclick = () => {
   ensureAudio();
   const det = S.lastDet && performance.now() - S.lastDetAt < 600 ? S.lastDet : null;

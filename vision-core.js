@@ -98,15 +98,22 @@
     if (!list.length) return null;
     const inside = list.filter(c => !c.edge);
     let pool = inside.length ? inside : list;
-    // le papier est clair : un set de table ou un plateau qui entoure la page l'est moins
+    // le bord d'une page est du papier clair ; celui d'un set de table ou d'un plateau ne l'est pas.
+    // On mesure une bande juste à l'intérieur du cadre (et pas tout l'intérieur : une grande
+    // photo sombre sur la page ne doit pas faire préférer l'encadré de texte en dessous).
     if (gray && pool.length > 1) {
       for (const c of pool) {
+        const cx = c.quad.reduce((a, p) => a + p[0], 0) / 4, cy = c.quad.reduce((a, p) => a + p[1], 0) / 4;
+        const inner = c.quad.map(([x, y]) => [cx + (x - cx) * 0.9, cy + (y - cy) * 0.9]);
         const m = new cv.Mat(H, W, cv.CV_8U, new cv.Scalar(0));
-        const poly = cv.matFromArray(4, 1, cv.CV_32SC2, [].concat(...c.quad).map(Math.round));
-        const pv = new cv.MatVector(); pv.push_back(poly);
-        cv.fillPoly(m, pv, new cv.Scalar(255));
+        const po = cv.matFromArray(4, 1, cv.CV_32SC2, [].concat(...c.quad).map(Math.round));
+        const pi = cv.matFromArray(4, 1, cv.CV_32SC2, [].concat(...inner).map(Math.round));
+        const vo = new cv.MatVector(); vo.push_back(po);
+        const vi = new cv.MatVector(); vi.push_back(pi);
+        cv.fillPoly(m, vo, new cv.Scalar(255));
+        cv.fillPoly(m, vi, new cv.Scalar(0));
         c.light = cv.mean(gray, m)[0];
-        del(m, poly); pv.delete();
+        del(m, po, pi); vo.delete(); vi.delete();
       }
       const top = Math.max(...pool.map(c => c.light));
       pool = pool.filter(c => c.light >= top * 0.88);
@@ -242,9 +249,18 @@
     }
     let best = pickQuad(cv, cands, W, H, mode, gray);
     // 3) page simple sans bord côté reliure : coupe le long du pli
-    if (mode === 'page' && (!best || best.edge)) {
+    if (mode === 'page') {
       const g = V.splitAtGutter(cv, gray, W, H);
-      if (g) { g.edge = touchesEdge(g.quad, W, H); if (!best || !g.edge) best = g; }
+      if (g) {
+        g.edge = touchesEdge(g.quad, W, H);
+        if (!best || (best.edge && !g.edge)) best = g;
+        else if (!g.edge && g.area > best.area * 1.15) {
+          // le cadre trouvé est peut-être un encadré à l'intérieur de la page : on garde la page entière
+          const cx = best.quad.reduce((a, p) => a + p[0], 0) / 4, cy = best.quad.reduce((a, p) => a + p[1], 0) / 4;
+          const xs = g.quad.map(p => p[0]), ys = g.quad.map(p => p[1]);
+          if (cx > Math.min(...xs) && cx < Math.max(...xs) && cy > Math.min(...ys) && cy < Math.max(...ys)) best = g;
+        }
+      }
     }
 
     let result = null;
@@ -377,7 +393,7 @@
       k.delete();
     }
     // --- Illustrations (avant l'éclairage : leurs zones ne comptent pas comme de l'ombre)
-    const images = V.findIllustrations(cv, color, small, bgSmall);
+    const images = opts.plain ? [] : V.findIllustrations(cv, color, small, bgSmall);
     {
       // éclairage : fond par tuiles, en ignorant les tuiles couvertes par une illustration
       const nx = 6, ny = 8, vals = [];
@@ -529,6 +545,12 @@
   V.judge = function (m, ctx) {
     ctx = ctx || {};
     const redo = [], warn = [];
+    if (ctx.plain) {
+      // photo simple : envoyée telle quelle, on signale seulement le flou et les reflets
+      if (m.sharpness < 45) warn.push('photo floue');
+      if (m.glareBlob > 0.004 || m.glareTotal > 0.012) warn.push('reflet');
+      return { status: warn.length ? 'warn' : 'ok', redo, warn };
+    }
     const sharpRef = ctx.medianSharp || 0;
     if (m.sharpness < 45 || (sharpRef > 0 && m.sharpness < sharpRef * 0.4)) redo.push('floue');
     else if (sharpRef > 0 && m.sharpness < sharpRef * 0.6) warn.push('un peu floue');
@@ -553,9 +575,11 @@
 
   /* Verdict OCR (lisibilité du texte). */
   V.judgeOcr = function (conf, words) {
-    if (words < 15) return { redo: [], warn: [] };
-    if (conf < 55) return { redo: ['texte peu lisible'], warn: [] };
-    if (conf < 72) return { redo: [], warn: ['texte moyennement lisible'] };
+    // les illustrations et petites étiquettes font baisser la note sans que le texte soit mauvais :
+    // on ne demande de refaire que les pages de texte dense vraiment mal lues
+    if (words < 25) return { redo: [], warn: [] };
+    if (conf < 45 && words >= 120) return { redo: ['texte peu lisible'], warn: [] };
+    if (conf < 60) return { redo: [], warn: ['lecture auto difficile, vérifie le texte'] };
     return { redo: [], warn: [] };
   };
 

@@ -191,3 +191,4 @@ select, input[type=text], input:not([type]), #clientId, #newLivret {
   .thumb { width: 40px; height: 54px; }
   .hint { top: calc(var(--safe-t) + 60px); }
 }
+.field select, .field input { flex: none; }
