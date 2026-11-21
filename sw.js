@@ -1,5 +1,5 @@
 /* Cache hors ligne : l'appli fonctionne sans réseau, les envois Drive attendent le retour du réseau. */
-const VERSION = 'scan-livrets-v1.0.0';
+const VERSION = 'scan-livrets-v1.1.0';
 const SHELL = ['./', 'index.html', 'styles.css', 'config.js', 'app.js', 'vision-core.js', 'vision-worker.js',
   'lib/opencv.js', 'lib/jszip.min.js', 'lib/tesseract/tesseract.min.js', 'lib/tesseract/worker.min.js',
   'lib/tesseract/core/tesseract-core-simd-lstm.wasm.js', 'lib/tesseract/core/tesseract-core-lstm.wasm.js', 'lib/tesseract/lang/eng.traineddata.gz',

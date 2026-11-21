@@ -3,7 +3,7 @@
    → version couleur + version lecture + illustrations → Google Drive. */
 'use strict';
 
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const CFG = window.SCAN_CONFIG || {};
 const $ = (s) => document.querySelector(s);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -53,7 +53,7 @@ const DB = {
 /* ---------- État ---------- */
 const S = {
   set: Object.assign({
-    livret: 'Cycle 3', textMode: 'contraste', ocr: true, auto: true, delay: 900,
+    livret: 'Cycle 3', pageMode: 'page', textMode: 'contraste', ocr: true, auto: true, delay: 900,
     sound: true, clientId: CFG.clientId || ''
   }, LS.get('settings', {})),
   livret: null,          // fiche du livret courant
@@ -204,7 +204,7 @@ function loop() {
   sctx.drawImage(video, 0, 0, sw, sh);
   const img = sctx.getImageData(0, 0, sw, sh);
   detBusy = true;
-  detector.req({ type: 'detect', img, fixedQuad: S.frameLock ? S.lockedQuad : null }, [img.data.buffer])
+  detector.req({ type: 'detect', img, mode: S.set.pageMode, fixedQuad: S.frameLock ? S.lockedQuad : null }, [img.data.buffer])
     .then(onDetect).catch(e => console.warn(e)).finally(() => { detBusy = false; });
 }
 
@@ -325,6 +325,7 @@ async function capture(det, fp) {
   try {
     const vw = video.videoWidth, vh = video.videoHeight;
     let quad = det && det.quad, edgeTouch = det ? det.edgeTouch : false;
+    const gutter = !!(det && det.gutter && !S.frameLock);
     if (S.frameLock && S.lockedQuad) { quad = S.lockedQuad; edgeTouch = false; }
     if (!quad) { quad = [[0, 0], [1, 0], [1, 1], [0, 1]]; edgeTouch = false; }
 
@@ -346,7 +347,7 @@ async function capture(det, fp) {
       id: 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
       livret: S.livret.name, num, created: Date.now(),
       status: 'busy', qRedo: [], qWarn: [], ocrRedo: [], ocrWarn: [], kept: false,
-      images: [], ocr: null, edgeTouch,
+      images: [], ocr: null, edgeTouch, gutter,
       upload: { state: 'none', fileIds: {}, prev: old ? Object.assign({}, old.upload.prev || {}, old.upload.fileIds || {}) : null },
       previewUrl: small.toDataURL('image/jpeg', 0.6)
     };
@@ -408,7 +409,8 @@ async function onProcessed(page, res) {
     lockedAspect: S.livret.aspect || null,
     medianSharp: others.length >= 3 ? median(others.map(p => p.metrics.sharpness)) : 0,
     prevFp: prev ? prev.metrics.fp : null,
-    edgeTouch: page.edgeTouch
+    edgeTouch: page.edgeTouch,
+    gutter: page.gutter
   };
   const j = Vision.judge(res.metrics, ctx);
   page.qRedo = j.redo; page.qWarn = j.warn;
@@ -958,6 +960,7 @@ function renderMenu() {
     const names = [...new Set(ls.map(l => l.name).concat(S.livret.name))].sort((a, b) => a.localeCompare(b, 'fr', { numeric: true }));
     sel.replaceChildren(...names.map(n => { const o = document.createElement('option'); o.value = n; o.textContent = n; o.selected = n === S.livret.name; return o; }));
   });
+  $('#pageMode').value = S.set.pageMode || 'page';
   $('#textMode').value = S.set.textMode;
   $('#delay').value = String(S.set.delay);
   $('#ocr').checked = !!S.set.ocr;
@@ -995,6 +998,7 @@ $('#resetFormat').onclick = async () => {
   renderMenu();
 };
 $('#textMode').onchange = (e) => { S.set.textMode = e.target.value; saveSettings(); };
+$('#pageMode').onchange = (e) => { S.set.pageMode = e.target.value; saveSettings(); AC.stableSince = 0; };
 $('#delay').onchange = (e) => { S.set.delay = +e.target.value; saveSettings(); };
 $('#ocr').onchange = (e) => { S.set.ocr = e.target.checked; saveSettings(); };
 $('#sound').onchange = (e) => { S.set.sound = e.target.checked; saveSettings(); };

@@ -59,7 +59,7 @@ self.onmessage = async (e) => {
       if (msg.fixedQuad) {
         det = { quad: msg.fixedQuad, areaFrac: 0.5, edgeTouch: false, sharp: sharpIn(msg.img, msg.fixedQuad) };
       } else {
-        det = Vision.detect(cv, msg.img);
+        det = Vision.detect(cv, msg.img, { mode: msg.mode || 'page' });
       }
       const fp = det ? Vision.fingerprint(cv, msg.img, det.quad) : null;
       self.postMessage({ type: 'detect', id: msg.id, det, fp, w: msg.img.width, h: msg.img.height });

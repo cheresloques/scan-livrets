@@ -37,9 +37,9 @@
     return { w, h };
   };
 
-  /* Cherche le plus grand quadrilatère convexe dans une liste de contours. */
-  function bestQuadFromContours(cv, contours, minArea, W, H) {
-    let best = null;
+  /* Tous les quadrilatères convexes plausibles d'une liste de contours. */
+  function quadsFromContours(cv, contours, minArea) {
+    const out = [];
     for (let i = 0; i < contours.size(); i++) {
       const c = contours.get(i);
       const area = cv.contourArea(c);
@@ -75,56 +75,181 @@
       }
       if (found) {
         const q = orderQuad(found);
-        const a = polyArea(q);
-        // rejette les quadrilatères trop allongés ou dégénérés
         const s = V.quadSize(q);
         const ratio = Math.min(s.w, s.h) / Math.max(s.w, s.h);
-        if (ratio > 0.3 && (!best || a > best.area)) best = { quad: q, area: a };
+        if (ratio > 0.3) out.push({ quad: q, area: polyArea(q), aspect: s.w / s.h });
       }
       c.delete();
     }
-    return best;
+    return out;
   }
 
-  /* Détection du livret dans une petite image (≈ 480 px de large).
-     Renvoie { quad (coordonnées 0..1), areaFrac, edgeTouch, sharp } ou null. */
-  V.detect = function (cv, img) {
+  function touchesEdge(q, W, H) {
+    const m = 0.012;
+    return q.some(([x, y]) => x < W * m || y < H * m || x > W * (1 - m) || y > H * (1 - m));
+  }
+
+  /* Choix du cadre : on écarte ce qui touche les bords de la photo (table, set de table…)
+     dès qu'un autre candidat existe ; en mode page simple, on veut une page en hauteur. */
+  function pickQuad(cv, cands, W, H, mode, gray) {
+    let list = cands.filter(c => c.area < W * H * 0.985);
+    for (const c of list) c.edge = touchesEdge(c.quad, W, H);
+    if (mode === 'page') list = list.filter(c => c.aspect > 0.45 && c.aspect < 1.05);
+    if (!list.length) return null;
+    const inside = list.filter(c => !c.edge);
+    let pool = inside.length ? inside : list;
+    // le papier est clair : un set de table ou un plateau qui entoure la page l'est moins
+    if (gray && pool.length > 1) {
+      for (const c of pool) {
+        const m = new cv.Mat(H, W, cv.CV_8U, new cv.Scalar(0));
+        const poly = cv.matFromArray(4, 1, cv.CV_32SC2, [].concat(...c.quad).map(Math.round));
+        const pv = new cv.MatVector(); pv.push_back(poly);
+        cv.fillPoly(m, pv, new cv.Scalar(255));
+        c.light = cv.mean(gray, m)[0];
+        del(m, poly); pv.delete();
+      }
+      const top = Math.max(...pool.map(c => c.light));
+      pool = pool.filter(c => c.light >= top * 0.88);
+    }
+    return pool.reduce((a, b) => (b.area > a.area ? b : a));
+  }
+
+  function contoursOf(cv, bin, mode) {
+    const contours = new cv.MatVector(), hier = new cv.Mat();
+    cv.findContours(bin, contours, hier, mode, cv.CHAIN_APPROX_SIMPLE);
+    hier.delete();
+    return contours;
+  }
+
+  /* Page simple d'un livret ouvert : la reliure n'a pas de bord net.
+     On cherche le pli (vallée sombre et étroite, presque verticale), on coupe la zone claire
+     le long de ce pli et on garde la plus grande moitié. */
+  V.splitAtGutter = function (cv, gray, W, H) {
+    const th = new cv.Mat();
+    cv.threshold(gray, th, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
+    const k = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(7, 7));
+    cv.morphologyEx(th, th, cv.MORPH_CLOSE, k);
+    const labels = new cv.Mat(), stats = new cv.Mat(), cents = new cv.Mat();
+    const n = cv.connectedComponentsWithStats(th, labels, stats, cents);
+    let bi = -1, ba = 0;
+    for (let i = 1; i < n; i++) { const a = stats.intAt(i, cv.CC_STAT_AREA); if (a > ba) { ba = a; bi = i; } }
+    let result = null;
+    if (bi > 0 && ba > W * H * 0.15) {
+      const bx = stats.intAt(bi, cv.CC_STAT_LEFT), by = stats.intAt(bi, cv.CC_STAT_TOP);
+      const bw = stats.intAt(bi, cv.CC_STAT_WIDTH), bh = stats.intAt(bi, cv.CC_STAT_HEIGHT);
+      const lab = labels.data32S, g = gray.data;
+      const pts = [];
+      const nb = 10, halves = [0.02, 0.04, 0.065].map(f => Math.max(4, Math.round(W * f)));
+      for (let j = 0; j < nb; j++) {
+        const y0 = Math.round(by + bh * (0.12 + 0.76 * j / nb)), y1 = Math.round(by + bh * (0.12 + 0.76 * (j + 1) / nb));
+        const prof = new Float32Array(bw);
+        for (let x = 0; x < bw; x++) {
+          let sum = 0, cnt = 0;
+          for (let y = y0; y < y1; y++) {
+            const idx = y * W + bx + x;
+            if (lab[idx] === bi) { sum += g[idx]; cnt++; }
+          }
+          prof[x] = cnt > (y1 - y0) * 0.3 ? sum / cnt : NaN;
+        }
+        const valid = Array.from(prof).filter(v => !isNaN(v)).sort((a, b) => a - b);
+        if (valid.length < bw * 0.5) continue;
+        const med = valid[Math.floor(valid.length / 2)];
+        let bestX = -1, bestS = 0;
+        for (const half of halves) {
+          for (let x = Math.round(bw * 0.08) + half; x < Math.round(bw * 0.92) - half; x++) {
+            const v = prof[x], l = prof[x - half], r = prof[x + half];
+            if (isNaN(v) || isNaN(l) || isNaN(r)) continue;
+            const sc = Math.min(l, r) - v; // vallée étroite : plus sombre que ses deux voisins
+            if (sc > bestS) { bestS = sc; bestX = x; }
+          }
+        }
+        if (bestX >= 0 && bestS > med * 0.07) pts.push([bx + bestX, (y0 + y1) / 2]);
+      }
+      if (pts.length >= 4) {
+        const xs = pts.map(p => p[0]).sort((a, b) => a - b);
+        const mx = xs[Math.floor(xs.length / 2)];
+        const keep = pts.filter(p => Math.abs(p[0] - mx) < W * 0.06);
+        if (keep.length >= 4) {
+          // droite x = a·y + b (le pli peut être penché à cause de la perspective)
+          const my = keep.reduce((s, p) => s + p[1], 0) / keep.length;
+          const mxx = keep.reduce((s, p) => s + p[0], 0) / keep.length;
+          let num = 0, den = 0;
+          for (const [x, y] of keep) { num += (y - my) * (x - mxx); den += (y - my) * (y - my); }
+          const a = den ? num / den : 0, b = mxx - a * my;
+          const xAt = (y) => a * y + b;
+          // quelle moitié garder : la plus grande
+          let left = 0, right = 0;
+          for (let y = 0; y < H; y += 2) for (let x = 0; x < W; x += 2) {
+            if (lab[y * W + x] !== bi) continue;
+            if (x < xAt(y)) left++; else right++;
+          }
+          const keepRight = right >= left;
+          const mask = new cv.Mat(), ref = new cv.Mat(H, W, cv.CV_32S, new cv.Scalar(bi));
+          cv.compare(labels, ref, mask, cv.CMP_EQ);
+          ref.delete();
+          const cut = keepRight
+            ? [0, 0, xAt(0) + 2, 0, xAt(H) + 2, H, 0, H]
+            : [xAt(0) - 2, 0, W, 0, W, H, xAt(H) - 2, H];
+          const poly = cv.matFromArray(4, 1, cv.CV_32SC2, cut.map(Math.round));
+          const pv = new cv.MatVector(); pv.push_back(poly);
+          cv.fillPoly(mask, pv, new cv.Scalar(0));
+          const contours = contoursOf(cv, mask, cv.RETR_EXTERNAL);
+          const cands = quadsFromContours(cv, contours, W * H * 0.1);
+          contours.delete();
+          const best = pickQuad(cv, cands, W, H, 'page', gray);
+          if (best) result = Object.assign(best, { gutter: true });
+          del(mask, poly); pv.delete();
+        }
+      }
+    }
+    del(th, k, labels, stats, cents);
+    return result;
+  };
+
+  /* Détection dans une petite image (≈ 480 px de large).
+     opts.mode : 'page' (une page à la fois, défaut) ou 'double' (livret entier / double page).
+     Renvoie { quad (coordonnées 0..1), areaFrac, edgeTouch, sharp, gutter } ou null. */
+  V.detect = function (cv, img, opts) {
+    const mode = (opts && opts.mode) || 'page';
     const W = img.width, H = img.height;
     const src = cv.matFromImageData(img);
     const gray = new cv.Mat();
     cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
     cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
-    const minArea = W * H * 0.18;
-    let best = null;
+    const minArea = W * H * 0.15;
+    let cands = [];
 
-    // 1) contours des bords (Canny)
+    // 1) contours des bords (Canny) — tous les contours, pas seulement les extérieurs,
+    //    pour trouver le livret même posé sur un set de table ou un plateau rectangulaire
     {
       const edges = new cv.Mat();
       cv.Canny(gray, edges, 40, 120);
       const k = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
       cv.dilate(edges, edges, k, new cv.Point(-1, -1), 2);
-      const contours = new cv.MatVector(), hier = new cv.Mat();
-      cv.findContours(edges, contours, hier, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-      best = bestQuadFromContours(cv, contours, minArea, W, H);
-      del(edges, k, hier); contours.delete();
+      const contours = contoursOf(cv, edges, cv.RETR_LIST);
+      cands = cands.concat(quadsFromContours(cv, contours, minArea));
+      del(edges, k); contours.delete();
     }
-    // 2) repli : seuil d'Otsu (page claire sur fond plus sombre)
-    if (!best) {
+    // 2) seuil d'Otsu (page claire sur fond plus sombre)
+    {
       const th = new cv.Mat();
       cv.threshold(gray, th, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
       const k = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(7, 7));
       cv.morphologyEx(th, th, cv.MORPH_CLOSE, k);
-      const contours = new cv.MatVector(), hier = new cv.Mat();
-      cv.findContours(th, contours, hier, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-      best = bestQuadFromContours(cv, contours, minArea, W, H);
-      del(th, k, hier); contours.delete();
+      const contours = contoursOf(cv, th, cv.RETR_LIST);
+      cands = cands.concat(quadsFromContours(cv, contours, minArea));
+      del(th, k); contours.delete();
+    }
+    let best = pickQuad(cv, cands, W, H, mode, gray);
+    // 3) page simple sans bord côté reliure : coupe le long du pli
+    if (mode === 'page' && (!best || best.edge)) {
+      const g = V.splitAtGutter(cv, gray, W, H);
+      if (g) { g.edge = touchesEdge(g.quad, W, H); if (!best || !g.edge) best = g; }
     }
 
     let result = null;
-    if (best && best.area < W * H * 0.985) {
+    if (best) {
       const q = best.quad;
-      const m = 0.012;
-      const edgeTouch = q.some(([x, y]) => x < W * m || y < H * m || x > W * (1 - m) || y > H * (1 - m));
       // netteté rapide à l'intérieur du cadre (pour éviter de déclencher pendant la mise au point)
       const xs = q.map(p => p[0]), ys = q.map(p => p[1]);
       const x0 = Math.max(0, Math.floor(Math.min(...xs))), y0 = Math.max(0, Math.floor(Math.min(...ys)));
@@ -139,7 +264,8 @@
       result = {
         quad: q.map(([x, y]) => [x / W, y / H]),
         areaFrac: best.area / (W * H),
-        edgeTouch,
+        edgeTouch: !!best.edge,
+        gutter: !!best.gutter,
         sharp
       };
     }
@@ -410,8 +536,10 @@
     if (m.glareTotal > 0.4) redo.push('photo surexposée');
     else if (m.glareBlob > 0.004 || m.glareTotal > 0.012) redo.push('reflet sur la page');
     else if (m.glareBlob > 0.0015) warn.push('petit reflet');
+    // côté reliure, l'ombre du pli est normale (la version lecture la gomme)
+    const lr = ctx.gutter ? 0.45 : 0.6;
     if (m.lightRatio < 0.35) redo.push('ombre forte sur la page');
-    else if (m.lightRatio < 0.6) warn.push('éclairage inégal');
+    else if (m.lightRatio < lr) warn.push('éclairage inégal');
     if (m.paper < 70) redo.push('page trop sombre');
     if (ctx.lockedAspect) {
       const d = Math.abs(m.aspect - ctx.lockedAspect) / ctx.lockedAspect;
