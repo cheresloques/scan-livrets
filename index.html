@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#0a1220">
+<title>Scan Livrets</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600&family=Inter:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<main id="cam">
+  <video id="video" playsinline muted autoplay></video>
+  <canvas id="overlay"></canvas>
+  <div id="flash" hidden></div>
+
+  <header id="top">
+    <button id="livretBtn" class="chip" aria-label="Changer de livret">
+      <span class="eyebrow">Livret</span>
+      <span id="livretName">Cycle 3</span>
+    </button>
+    <div id="counts" class="counts" aria-live="polite"></div>
+    <button id="driveBtn" class="chip drive" aria-label="Google Drive">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 18h10a4 4 0 0 0 .6-7.96A6 6 0 0 0 6.1 9.1 4.5 4.5 0 0 0 7 18z"/></svg>
+      <span id="driveLabel">Drive</span>
+    </button>
+  </header>
+
+  <div id="toasts" aria-live="assertive"></div>
+
+  <div id="hint" class="hint">Démarrage de la caméra…</div>
+  <div id="retakeBanner" class="retake" hidden></div>
+
+  <footer id="bottom">
+    <div id="strip" class="strip" aria-label="Pages scannées"></div>
+    <div class="controls">
+      <button id="autoBtn" class="round toggle on" aria-pressed="true" aria-label="Déclenchement automatique">
+        <span class="lbl">AUTO</span>
+      </button>
+      <button id="lockBtn" class="round toggle" aria-pressed="false" aria-label="Cadre fixe (téléphone sur support)">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+      </button>
+      <button id="shutter" class="shutter" aria-label="Prendre la page"><span></span></button>
+      <button id="torchBtn" class="round toggle" aria-pressed="false" aria-label="Lampe">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 2h6l-1 7h4l-8 13 2-9H7z"/></svg>
+      </button>
+      <button id="menuBtn" class="round" aria-label="Livret et réglages">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+    </div>
+  </footer>
+</main>
+
+<!-- Fiche d'une page -->
+<section id="pageSheet" class="sheet" hidden aria-label="Page">
+  <div class="sheet-head">
+    <h2>Page <input id="pageNum" type="number" min="1" inputmode="numeric"></h2>
+    <button class="x" data-close aria-label="Fermer">×</button>
+  </div>
+  <div id="pageVerdict" class="verdict"></div>
+  <div class="seg" role="tablist">
+    <button id="viewColor" class="on" role="tab">Couleur</button>
+    <button id="viewText" role="tab">Lecture</button>
+  </div>
+  <div id="pageStage" class="stage">
+    <img id="pageImg" alt="">
+    <div id="boxLayer"></div>
+  </div>
+  <p class="small" id="boxHelp">Les cadres dorés sont les illustrations récupérées. Touche un cadre pour le retirer, ou fais glisser ton doigt sur la page pour en ajouter un.</p>
+  <div id="imgList" class="imglist"></div>
+  <div class="actions">
+    <button id="retakeOne" class="btn primary">Refaire cette page</button>
+    <button id="keepOne" class="btn">Garder quand même</button>
+    <button id="deleteOne" class="btn danger">Supprimer</button>
+  </div>
+  <details class="metrics"><summary>Mesures</summary><pre id="pageMetrics"></pre></details>
+</section>
+
+<!-- Livret et réglages -->
+<section id="menuSheet" class="sheet" hidden aria-label="Livret et réglages">
+  <div class="sheet-head">
+    <h2 class="display">Livret</h2>
+    <button class="x" data-close aria-label="Fermer">×</button>
+  </div>
+
+  <div id="summary" class="summary"></div>
+  <div class="actions">
+    <button id="retakeAll" class="btn primary">Refaire les pages signalées</button>
+    <button id="uploadAll" class="btn">Envoyer sur Drive</button>
+    <button id="exportZip" class="btn">Exporter en ZIP</button>
+  </div>
+  <div id="grid" class="grid"></div>
+
+  <h3>Changer de livret</h3>
+  <div class="row">
+    <select id="livretSelect" aria-label="Livrets"></select>
+    <input id="newLivret" placeholder="Nouveau livret (ex. Cycle 4)" autocomplete="off">
+    <button id="addLivret" class="btn">Créer</button>
+  </div>
+  <button id="resetFormat" class="btn ghost">Réinitialiser le format de page de ce livret</button>
+
+  <h3>Réglages</h3>
+  <label class="field">Version lecture
+    <select id="textMode">
+      <option value="contraste">Contraste poussé (gris)</option>
+      <option value="nb">Contraste maximal (noir et blanc)</option>
+    </select>
+  </label>
+  <label class="field">Délai avant déclenchement
+    <select id="delay">
+      <option value="600">Rapide (0,6 s)</option>
+      <option value="900">Normal (0,9 s)</option>
+      <option value="1400">Prudent (1,4 s)</option>
+    </select>
+  </label>
+  <label class="check"><input id="ocr" type="checkbox"> Vérifier la lisibilité du texte (lecture automatique, plus lent)</label>
+  <label class="check"><input id="sound" type="checkbox"> Sons et vibrations</label>
+
+  <h3>Google Drive</h3>
+  <p class="small">Dossier : <b id="drivePath">Claude / Scans Aeon Trespass</b></p>
+  <label class="field">Identifiant client Google (OAuth)
+    <input id="clientId" placeholder="xxxx.apps.googleusercontent.com" autocomplete="off" spellcheck="false">
+  </label>
+  <div class="actions">
+    <button id="driveConnect" class="btn primary">Connecter Google Drive</button>
+    <button id="driveForget" class="btn ghost">Déconnecter</button>
+  </div>
+  <p class="small muted" id="driveInfo"></p>
+  <p class="small muted">Version <span id="ver"></span></p>
+</section>
+
+<div id="backdrop" hidden></div>
+
+<script src="config.js"></script>
+<script src="vision-core.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
