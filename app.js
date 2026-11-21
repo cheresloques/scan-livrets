@@ -3,7 +3,7 @@
    → version couleur + version lecture + illustrations → Google Drive. */
 'use strict';
 
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 const CFG = window.SCAN_CONFIG || {};
 const $ = (s) => document.querySelector(s);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -1017,13 +1017,21 @@ $('#deleteOne').onclick = async () => {
   const btn = $('#deleteOne');
   if (deleteArmed !== p.id) { deleteArmed = p.id; btn.textContent = 'Confirmer la suppression'; setTimeout(() => { deleteArmed = null; btn.textContent = 'Supprimer'; }, 3000); return; }
   deleteArmed = null; btn.textContent = 'Supprimer';
-  S.pages = S.pages.filter(x => x !== p);
-  dismissToast(p.id);
-  await DB.del('pages', p.id);
-  if (p.upload.state !== 'sending') { TrashQ.add(pageFileIds(p)); reportDirty = true; }
-  pumpUploads();
-  closeSheets(); renderStrip(); renderCounts(); renderDrive();
+  await deletePages([p]);
+  closeSheets();
 };
+/* Supprime des pages de l'appli ; leurs fichiers Drive partent à la corbeille */
+async function deletePages(list) {
+  for (const p of list) {
+    S.pages = S.pages.filter(x => x !== p);
+    dismissToast(p.id);
+    S.retakeQueue = S.retakeQueue.filter(n => n !== p.num);
+    await DB.del('pages', p.id);
+    if (p.upload.state !== 'sending') { TrashQ.add(pageFileIds(p)); reportDirty = true; }
+  }
+  renderRetake(); renderStrip(); renderCounts(); renderDrive();
+  pumpUploads();
+}
 $('#pageNum').onchange = async (e) => {
   const p = S.pages.find(x => x.id === openPageId); if (!p) return;
   const n = parseInt(e.target.value, 10);
@@ -1048,7 +1056,26 @@ function renderMenu() {
   add(`${by(p => p.upload.state === 'done')} sur Drive`);
   if (S.livret.size) add(`format ${S.livret.size.w}×${S.livret.size.h}`);
   $('#retakeAll').disabled = !r;
-  $('#grid').replaceChildren(...S.pages.map(thumbEl));
+  for (const id of [...Sel.ids]) if (!S.pages.some(p => p.id === id)) Sel.ids.delete(id);
+  const grid = $('#grid');
+  grid.classList.toggle('selecting', Sel.on);
+  grid.replaceChildren(...S.pages.map(p => {
+    const el = thumbEl(p);
+    if (Sel.on) {
+      const t = document.createElement('i'); t.className = 'tick'; t.textContent = Sel.ids.has(p.id) ? '✓' : '';
+      el.appendChild(t);
+      el.classList.toggle('picked', Sel.ids.has(p.id));
+      el.setAttribute('aria-pressed', String(Sel.ids.has(p.id)));
+      el.onclick = () => { Sel.ids.has(p.id) ? Sel.ids.delete(p.id) : Sel.ids.add(p.id); Sel.armed = false; renderMenu(); };
+    }
+    return el;
+  }));
+  $('#selToggle').textContent = Sel.on ? 'Terminer' : 'Sélectionner';
+  $('#selTools').hidden = !Sel.on;
+  const n = Sel.ids.size;
+  const del = $('#selDelete');
+  del.disabled = !n;
+  del.textContent = !n ? 'Supprimer' : Sel.armed ? `Confirmer : supprimer ${n} page${n > 1 ? 's' : ''}` : `Supprimer ${n} page${n > 1 ? 's' : ''}`;
 
   const sel = $('#livretSelect');
   DB.all('livrets').then(ls => {
@@ -1067,6 +1094,19 @@ function renderMenu() {
     : 'Non connecté : les pages attendent sur le téléphone.';
   $('#ver').textContent = VERSION;
 }
+const Sel = { on: false, ids: new Set(), armed: false };
+$('#selToggle').onclick = () => { Sel.on = !Sel.on; Sel.ids.clear(); Sel.armed = false; renderMenu(); };
+$('#selAll').onclick = () => { S.pages.forEach(p => Sel.ids.add(p.id)); Sel.armed = false; renderMenu(); };
+$('#selNone').onclick = () => { Sel.ids.clear(); Sel.armed = false; renderMenu(); };
+$('#selDelete').onclick = async () => {
+  if (!Sel.ids.size) return;
+  if (!Sel.armed) { Sel.armed = true; renderMenu(); setTimeout(() => { if (Sel.armed) { Sel.armed = false; if (openSheet === 'menu') renderMenu(); } }, 4000); return; }
+  const list = S.pages.filter(p => Sel.ids.has(p.id));
+  Sel.ids.clear(); Sel.armed = false; Sel.on = false;
+  await deletePages(list);
+  toast({ id: 'seldel', kind: 'ok', title: `${list.length} page${list.length > 1 ? 's' : ''} supprimée${list.length > 1 ? 's' : ''}`, text: Drive.ok() ? 'Leurs fichiers Drive partent à la corbeille' : 'Leurs fichiers Drive seront retirés à la prochaine connexion', ttl: 4000 });
+  renderMenu();
+};
 $('#menuBtn').onclick = () => { showSheet('#menuSheet'); renderMenu(); };
 $('#livretBtn').onclick = () => { showSheet('#menuSheet'); renderMenu(); };
 $('#retakeAll').onclick = () => setRetake(S.pages.filter(p => p.status === 'redo' && !p.kept).map(p => p.num));
