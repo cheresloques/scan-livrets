@@ -1,9 +1,9 @@
-/* Scan Livrets — appli de numérisation des livrets d'Aeon Trespass.
+/* Scan Livrets — appli de numérisation de livrets et documents papier.
    Caméra en direct → détection du livret → déclenchement auto → contrôle qualité
    → version couleur + version lecture + illustrations → Google Drive. */
 'use strict';
 
-const VERSION = '1.4.0';
+const VERSION = '1.5.0';
 const CFG = window.SCAN_CONFIG || {};
 const $ = (s) => document.querySelector(s);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -53,7 +53,7 @@ const DB = {
 /* ---------- État ---------- */
 const S = {
   set: Object.assign({
-    livret: 'Cycle 3', pageMode: 'page', textMode: 'contraste', ocr: true, auto: true, delay: 900,
+    livret: 'Cycle 3', project: 'Aeon Trespass', pageMode: 'page', textMode: 'contraste', ocr: true, auto: true, delay: 900,
     sound: true, clientId: CFG.clientId || ''
   }, LS.get('settings', {})),
   livret: null,          // fiche du livret courant
@@ -609,8 +609,9 @@ const Drive = {
   async folders(liv) {
     if (liv.folders && liv.folders.root) return liv.folders;
     const claude = await this.folder('Claude', 'root');
-    const scans = await this.folder('Scans Aeon Trespass', claude);
-    const root = await this.folder(liv.name, scans);
+    const scans = await this.folder('Scans', claude);
+    const proj = await this.folder(liv.project || S.set.project || 'Divers', scans);
+    const root = await this.folder(liv.name, proj);
     const f = { root };
     for (const [k, n] of [['couleur', 'couleur'], ['lecture', 'lecture'], ['images', 'images'], ['texte', 'texte-lu']]) f[k] = await this.folder(n, root);
     liv.folders = f;
@@ -689,6 +690,11 @@ async function pumpUploads() {
         if (e.auth) { p.upload.state = 'pending'; break; }
         if (e.status === 404 && S.livret.folders) { S.livret.folders = null; p.upload.state = 'pending'; continue; }
         p.upload.state = 'error'; p.upload.error = String(e.message || e);
+        if (/storageQuotaExceeded|quota/i.test(p.upload.error)) {
+          toast({ id: 'quota', kind: 'redo', title: 'Google Drive est plein', text: 'Libère de la place (et vide la corbeille), puis « Synchroniser »' });
+          await savePage(p);
+          break;
+        }
         toast({ id: 'up-' + p.id, kind: 'warn', title: `Envoi de la page ${p.num} impossible`, text: 'Nouvel essai avec « Synchroniser »', ttl: 5000 });
       }
       if (!S.pages.includes(p)) {
@@ -763,6 +769,20 @@ async function syncDrive() {
         token = r.nextPageToken || '';
       } while (token);
     }
+    LS.set(TrashQ.key(), []); // tout ce qui est en trop vient d'être retiré
+    // pages traitées : une session de traduction a mis leurs fichiers à la corbeille → on les retire du téléphone
+    const processed = [];
+    for (const p of S.pages) {
+      const ids = p.upload.fileIds || {};
+      if (p.upload.state !== 'done' || !ids.color || seen.has(ids.color)) continue;
+      let gone = false;
+      try {
+        const m = await Drive.call(`https://www.googleapis.com/drive/v3/files/${ids.color}?fields=trashed`);
+        gone = !!m.trashed;
+      } catch (e) { if (e.status === 404) gone = true; else throw e; }
+      if (gone) processed.push(p);
+    }
+    if (processed.length) await deletePages(processed); // ses autres fichiers éventuels partent aussi à la corbeille
     let resend = 0;
     for (const p of S.pages) {
       if (!uploadable(p)) continue;
@@ -774,10 +794,13 @@ async function syncDrive() {
         await savePage(p);
       }
     }
-    LS.set(TrashQ.key(), []);
     reportDirty = true;
     upBusy = false;
-    toast({ id: 'sync', kind: 'ok', title: 'Synchronisation lancée', text: `${trashed} fichier${trashed > 1 ? 's' : ''} en trop retiré${trashed > 1 ? 's' : ''}, ${resend} page${resend > 1 ? 's' : ''} à renvoyer`, ttl: 5000 });
+    const parts = [];
+    if (processed.length) parts.push(`${processed.length} page${processed.length > 1 ? 's' : ''} traitée${processed.length > 1 ? 's' : ''} retirée${processed.length > 1 ? 's' : ''} du téléphone`);
+    parts.push(`${trashed} fichier${trashed > 1 ? 's' : ''} en trop retiré${trashed > 1 ? 's' : ''}`);
+    parts.push(`${resend} page${resend > 1 ? 's' : ''} à renvoyer`);
+    toast({ id: 'sync', kind: 'ok', title: 'Synchronisation faite', text: parts.join(', '), ttl: 6000 });
     await pumpUploads();
   } catch (e) {
     console.warn('sync', e);
@@ -1128,7 +1151,8 @@ function renderMenu() {
   $('#ocr').checked = !!S.set.ocr;
   $('#sound').checked = !!S.set.sound;
   $('#clientId').value = S.set.clientId || '';
-  $('#drivePath').textContent = `Claude / Scans Aeon Trespass / ${S.livret.name}`;
+  $('#drivePath').textContent = `Claude / Scans / ${S.livret.project || S.set.project} / ${S.livret.name}`;
+  $('#project').value = S.livret.project || S.set.project || '';
   $('#driveInfo').textContent = !S.set.clientId ? 'Renseigne l\'identifiant client pour activer l\'envoi automatique.'
     : Drive.ok() ? `Connecté jusqu'à ${new Date(Drive.tok.exp).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}.`
     : 'Non connecté : les pages attendent sur le téléphone.';
@@ -1166,6 +1190,16 @@ $('#resetFormat').onclick = async () => {
   S.livret.size = null; S.livret.aspect = null;
   await DB.put('livrets', S.livret);
   $('#resetFormat').textContent = 'Réinitialiser le format de page de ce livret';
+  renderMenu();
+};
+$('#project').onchange = async (e) => {
+  const v = e.target.value.trim(); if (!v) { e.target.value = S.livret.project || S.set.project; return; }
+  S.set.project = v; saveSettings();
+  if (S.livret.project !== v) {
+    S.livret.project = v; S.livret.folders = null; S.livret.reportId = null;
+    // les pages déjà envoyées repartiront dans le nouveau dossier à la prochaine synchronisation
+    await DB.put('livrets', S.livret);
+  }
   renderMenu();
 };
 $('#textMode').onchange = (e) => { S.set.textMode = e.target.value; saveSettings(); };
@@ -1237,7 +1271,7 @@ $('#torchBtn').onclick = async () => {
 /* ---------- Livrets ---------- */
 async function switchLivret(name) {
   S.set.livret = name; saveSettings();
-  S.livret = (await DB.get('livrets', name)) || { name, size: null, aspect: null, folders: null, reportId: null, created: Date.now() };
+  S.livret = (await DB.get('livrets', name)) || { name, project: S.set.project, size: null, aspect: null, folders: null, reportId: null, created: Date.now() };
   await DB.put('livrets', S.livret);
   const pages = await DB.byLivret(name);
   pages.forEach(p => {

@@ -1,7 +1,7 @@
 {
   "name": "Scan Livrets",
   "short_name": "Scan Livrets",
-  "description": "Numérisation des livrets d'Aeon Trespass pour la traduction",
+  "description": "Numérisation de livrets et documents papier vers Google Drive",
   "lang": "fr",
   "start_url": "./",
   "scope": "./",

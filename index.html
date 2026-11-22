@@ -140,7 +140,11 @@
   <label class="check"><input id="sound" type="checkbox"> Sons et vibrations</label>
 
   <h3>Google Drive</h3>
-  <p class="small">Dossier : <b id="drivePath">Claude / Scans Aeon Trespass</b></p>
+  <label class="field">Projet (dossier Drive de ce livret)
+    <input id="project" placeholder="ex. Aeon Trespass" autocomplete="off">
+  </label>
+  <p class="small">Dossier : <b id="drivePath">Claude / Scans</b></p>
+  <p class="small muted">Quand une session Claude a traité des pages, elle met leurs fichiers à la corbeille du Drive ; « Synchroniser » les retire alors du téléphone.</p>
   <label class="field">Identifiant client Google (OAuth)
     <input id="clientId" placeholder="xxxx.apps.googleusercontent.com" autocomplete="off" spellcheck="false">
   </label>

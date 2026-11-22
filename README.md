@@ -1,14 +1,17 @@
 # Scan Livrets
 
-Appli web installable (Android) pour numériser les livrets d'Aeon Trespass avant traduction.
+Appli web installable (Android) pour numériser des livrets et documents papier vers Google Drive
+(premier usage : les livrets d'Aeon Trespass, pour leur traduction).
 
-- Détection du livret et déclenchement automatique dès que la page est stable
-- Contrôle de chaque page : flou, reflet, ombre, page coupée, format, lisibilité du texte
-- Deux versions par page : couleur (pour les illustrations) et lecture (contraste poussé)
-- Recadrage identique : le premier bon cadrage fixe le format du livret
+- Détection de la page et déclenchement automatique dès qu'elle est stable
+- Contrôle de chaque page : flou, reflet, ombre, page coupée, format
+- Deux versions par page : couleur (illustrations) et lecture (contraste poussé)
+- Recadrage identique avec une marge autour de la page ; bouton photo simple (image entière)
 - Illustrations découpées automatiquement (modifiables à la main)
-- Envoi automatique dans Google Drive : `Claude / Scans Aeon Trespass / <livret>/`
+- Envoi automatique dans Google Drive : `Claude / Scans / <projet> / <livret>/`
+- Sélection multiple, suppression par lot, bouton « Synchroniser avec Drive »
 
 Tout le traitement se fait sur le téléphone. Aucun scan ne passe par ce dépôt.
+Consignes pour les sessions Claude qui utilisent les scans : [CONSIGNES-SESSIONS.md](CONSIGNES-SESSIONS.md).
 
 Bibliothèques embarquées : OpenCV.js 4.10, Tesseract.js 5.1.1, JSZip 3.10.1.
