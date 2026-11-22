@@ -3,7 +3,7 @@
    → version couleur + version lecture + illustrations → Google Drive. */
 'use strict';
 
-const VERSION = '1.5.0';
+const VERSION = '1.5.1';
 const CFG = window.SCAN_CONFIG || {};
 const $ = (s) => document.querySelector(s);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -595,11 +595,16 @@ const Drive = {
     if (!r.ok) { const e = new Error('Drive ' + r.status + ' ' + (await r.text()).slice(0, 200)); e.status = r.status; throw e; }
     return r.status === 204 ? null : r.json();
   },
-  async folder(name, parent) {
+  /* tous les dossiers de ce nom (le plus ancien d'abord) */
+  async folderAll(name, parent) {
     const esc = name.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     const q = `name='${esc}' and mimeType='application/vnd.google-apps.folder' and '${parent}' in parents and trashed=false`;
-    const r = await this.call('https://www.googleapis.com/drive/v3/files?fields=files(id)&pageSize=5&q=' + encodeURIComponent(q));
-    if (r.files && r.files.length) return r.files[0].id;
+    const r = await this.call('https://www.googleapis.com/drive/v3/files?fields=files(id,createdTime)&orderBy=createdTime&pageSize=20&q=' + encodeURIComponent(q));
+    return (r.files || []).map(x => x.id);
+  },
+  async folder(name, parent) {
+    const all = await this.folderAll(name, parent);
+    if (all.length) return all[0];
     const c = await this.call('https://www.googleapis.com/drive/v3/files?fields=id', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, mimeType: 'application/vnd.google-apps.folder', parents: [parent] })
@@ -608,6 +613,12 @@ const Drive = {
   },
   async folders(liv) {
     if (liv.folders && liv.folders.root) return liv.folders;
+    // un seul calcul à la fois : deux appels simultanés créaient des dossiers en double
+    if (this._fl) return this._fl;
+    this._fl = this._folders(liv).finally(() => { this._fl = null; });
+    return this._fl;
+  },
+  async _folders(liv) {
     const claude = await this.folder('Claude', 'root');
     const scans = await this.folder('Scans', claude);
     const proj = await this.folder(liv.project || S.set.project || 'Divers', scans);
@@ -755,34 +766,51 @@ async function syncDrive() {
     }
     const seen = new Set();
     let trashed = 0;
-    for (const folder of [f.couleur, f.lecture, f.images, f.texte]) {
-      let token = '';
-      do {
-        const q = encodeURIComponent(`'${folder}' in parents and trashed=false`);
-        const r = await Drive.call(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=nextPageToken,files(id,name)&pageSize=1000${token ? '&pageToken=' + token : ''}`);
-        for (const file of r.files || []) {
-          const exp = expected.get(file.id);
-          if (!exp) { await Drive.trash(file.id); trashed++; continue; }
-          seen.add(file.id);
-          if (exp.name !== file.name) exp.p.upload.state = 'pending';
-        }
-        token = r.nextPageToken || '';
-      } while (token);
+    // chaque dossier de travail, y compris d'éventuels doublons (même nom) : on regroupe tout dans le plus ancien
+    for (const [k, n] of [['couleur', 'couleur'], ['lecture', 'lecture'], ['images', 'images'], ['texte', 'texte-lu']]) {
+      const all = await Drive.folderAll(n, f.root);
+      const main = f[k];
+      for (const folder of [main, ...all.filter(x => x !== main)]) {
+        let token = '';
+        do {
+          const q = encodeURIComponent(`'${folder}' in parents and trashed=false`);
+          const r = await Drive.call(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=nextPageToken,files(id,name)&pageSize=1000${token ? '&pageToken=' + token : ''}`);
+          for (const file of r.files || []) {
+            const exp = expected.get(file.id);
+            if (!exp) { await Drive.trash(file.id); trashed++; continue; }
+            if (folder !== main) {
+              await Drive.call(`https://www.googleapis.com/drive/v3/files/${file.id}?addParents=${main}&removeParents=${folder}&fields=id`, {
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{}'
+              });
+            }
+            seen.add(file.id);
+            if (exp.name !== file.name) exp.p.upload.state = 'pending';
+          }
+          token = r.nextPageToken || '';
+        } while (token);
+        if (folder !== main) await Drive.trash(folder); // doublon vidé
+      }
     }
     LS.set(TrashQ.key(), []); // tout ce qui est en trop vient d'être retiré
-    // pages traitées : une session de traduction a mis leurs fichiers à la corbeille → on les retire du téléphone
+    // pages traitées : une session Claude a mis leurs fichiers à la corbeille ou les a déplacés hors des
+    // dossiers de travail (ex. « <livret> - traités ») → on les retire du téléphone, sans toucher au Drive
+    const work = new Set([f.couleur, f.lecture, f.images, f.texte]);
     const processed = [];
     for (const p of S.pages) {
       const ids = p.upload.fileIds || {};
-      if (p.upload.state !== 'done' || !ids.color || seen.has(ids.color)) continue;
+      if (p.upload.state !== 'done') continue;
+      const check = [ids.color, ids.text].filter(id => id && !seen.has(id));
       let gone = false;
-      try {
-        const m = await Drive.call(`https://www.googleapis.com/drive/v3/files/${ids.color}?fields=trashed`);
-        gone = !!m.trashed;
-      } catch (e) { if (e.status === 404) gone = true; else throw e; }
+      for (const id of check) {
+        try {
+          const m = await Drive.call(`https://www.googleapis.com/drive/v3/files/${id}?fields=trashed,parents`);
+          if (m.trashed || !(m.parents || []).some(x => work.has(x))) gone = true;
+        } catch (e) { if (e.status === 404) gone = true; else throw e; }
+        if (gone) break;
+      }
       if (gone) processed.push(p);
     }
-    if (processed.length) await deletePages(processed); // ses autres fichiers éventuels partent aussi à la corbeille
+    if (processed.length) await removeLocal(processed);
     let resend = 0;
     for (const p of S.pages) {
       if (!uploadable(p)) continue;
@@ -1083,6 +1111,16 @@ $('#deleteOne').onclick = async () => {
   await deletePages([p]);
   closeSheets();
 };
+/* Retire des pages du téléphone sans toucher à leurs fichiers Drive (pages traitées) */
+async function removeLocal(list) {
+  for (const p of list) {
+    S.pages = S.pages.filter(x => x !== p);
+    dismissToast(p.id);
+    S.retakeQueue = S.retakeQueue.filter(n => n !== p.num);
+    await DB.del('pages', p.id);
+  }
+  renderRetake(); renderStrip(); renderCounts(); renderDrive();
+}
 /* Supprime des pages de l'appli ; leurs fichiers Drive partent à la corbeille */
 async function deletePages(list) {
   for (const p of list) {

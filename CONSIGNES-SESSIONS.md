@@ -22,12 +22,19 @@ Claude / Scans / <projet> / <livret> /
 
 ## Une fois des pages traitées
 
-Mettre **à la corbeille** tous les fichiers de ces pages (`couleur`, `lecture`, `images`,
-`texte-lu` pour chaque pNNN traité), ne pas les supprimer définitivement.
+Retirer leurs fichiers des dossiers de travail (`couleur`, `lecture`, `images`, `texte-lu`),
+pour chaque pNNN traité, de l'une de ces deux façons :
 
-- La corbeille du Drive se vide seule au bout de 30 jours : Pierre peut récupérer une page
-  pendant un mois.
-- Au prochain « Synchroniser avec Drive » dans l'appli, les pages dont les fichiers sont à la
-  corbeille sont retirées du téléphone.
-- Ne rien ajouter d'autre dans les sous-dossiers `couleur`, `lecture`, `images`, `texte-lu` :
-  « Synchroniser » met à la corbeille tout fichier qu'il ne connaît pas.
+- **Encore besoin des fichiers** : les déplacer dans un dossier à côté, par exemple
+  `<livret> - traités` (au même niveau que le dossier du livret, pas dedans).
+- **Plus besoin** : les mettre **à la corbeille** (jamais de suppression définitive). La
+  corbeille du Drive se vide seule au bout de 30 jours : Pierre peut récupérer une page pendant
+  un mois.
+
+Ne jamais déplacer ou renommer les dossiers de travail eux-mêmes : seulement les fichiers.
+
+Au prochain « Synchroniser avec Drive » dans l'appli, les pages dont les fichiers ont quitté les
+dossiers de travail (corbeille ou déplacement) sont retirées du téléphone, sans toucher au Drive.
+
+Ne rien ajouter d'autre dans les dossiers de travail : « Synchroniser » met à la corbeille tout
+fichier qu'il ne connaît pas.
