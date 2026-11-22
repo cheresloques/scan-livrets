@@ -79,6 +79,7 @@
   <div id="imgList" class="imglist"></div>
   <div class="actions">
     <button id="retakeOne" class="btn primary">Refaire cette page</button>
+    <button id="adjustOne" class="btn">Ajuster le cadre</button>
     <button id="keepOne" class="btn">Garder quand même</button>
     <button id="deleteOne" class="btn danger">Supprimer</button>
   </div>
@@ -154,6 +155,24 @@
   </div>
   <p class="small muted" id="driveInfo"></p>
   <p class="small muted">Version <span id="ver"></span></p>
+</section>
+
+<!-- Ajustement du cadre à la main -->
+<section id="adjustSheet" class="sheet" hidden aria-label="Ajuster le cadre">
+  <div class="sheet-head">
+    <h2>Ajuster le cadre</h2>
+    <button class="x" data-close aria-label="Fermer">×</button>
+  </div>
+  <p class="small">Fais glisser les quatre coins dorés sur les coins de la page.</p>
+  <div id="adjStage" class="adj">
+    <img id="adjImg" alt="Photo d'origine">
+    <svg id="adjSvg" preserveAspectRatio="none"><polygon id="adjPoly"/></svg>
+    <div class="h" data-k="0"></div><div class="h" data-k="1"></div><div class="h" data-k="2"></div><div class="h" data-k="3"></div>
+  </div>
+  <div class="actions">
+    <button id="adjOk" class="btn primary">Valider le cadre</button>
+    <button id="adjReset" class="btn ghost">Photo entière</button>
+  </div>
 </section>
 
 <div id="backdrop" hidden></div>

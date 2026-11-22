@@ -3,7 +3,7 @@
    → version couleur + version lecture + illustrations → Google Drive. */
 'use strict';
 
-const VERSION = '1.5.1';
+const VERSION = '1.6.0';
 const CFG = window.SCAN_CONFIG || {};
 const $ = (s) => document.querySelector(s);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -374,7 +374,8 @@ async function capture(det, fp, plain) {
     const fctx = fc.getContext('2d', { willReadFrequently: true });
     fctx.drawImage(video, 0, 0, vw, vh);
     const img = fctx.getImageData(0, 0, vw, vh);
-    fc.width = fc.height = 1;
+    // photo d'origine gardée sur le téléphone, pour pouvoir réajuster le cadre à la main
+    const sourceP = new Promise(r => fc.toBlob(b => { r(b); fc.width = fc.height = 1; }, 'image/jpeg', 0.9));
 
     const fl = $('#flash'); fl.hidden = false; fl.style.animation = 'none'; void fl.offsetWidth; fl.style.animation = '';
     setTimeout(() => { fl.hidden = true; }, 280);
@@ -410,8 +411,10 @@ async function capture(det, fp, plain) {
       margin: plain ? 0 : 0.04,
       plain: !!plain
     };
+    page.quad = quad;
+    sourceP.then(b => { page.source = b; });
     processor.req({ type: 'process', img, quad, opts }, [img.data.buffer])
-      .then(res => onProcessed(page, res))
+      .then(async res => { if (!page.source) page.source = await sourceP; return onProcessed(page, res); })
       .catch(err => {
         console.error(err);
         page.status = 'redo'; page.qRedo = ['erreur de traitement'];
@@ -962,10 +965,10 @@ function showSheet(id) {
   closeSheets(true);
   $('#backdrop').hidden = false;
   $(id).hidden = false;
-  openSheet = id === '#menuSheet' ? 'menu' : 'page';
+  openSheet = id === '#menuSheet' ? 'menu' : id === '#adjustSheet' ? 'adjust' : 'page';
 }
 function closeSheets(silent) {
-  $('#pageSheet').hidden = true; $('#menuSheet').hidden = true; $('#backdrop').hidden = true;
+  $('#pageSheet').hidden = true; $('#menuSheet').hidden = true; $('#adjustSheet').hidden = true; $('#backdrop').hidden = true;
   openSheet = null; openPageId = null;
   if (!silent) { AC.stableSince = 0; }
 }
@@ -1006,6 +1009,9 @@ function renderPageSheet(p) {
     return el;
   }));
   $('#keepOne').hidden = p.status !== 'redo' || p.kept;
+  // les photos simples d'avant la 1.6 n'ont pas de photo d'origine : leur version couleur est l'image entière
+  if (!p.source && p.plain && p.color) p.source = p.color;
+  $('#adjustOne').hidden = !p.source;
   $('#plainNote').hidden = !p.plain;
   const m = Object.assign({}, p.metrics || {}); delete m.fp;
   $('#pageMetrics').textContent = JSON.stringify(m, null, 1);
@@ -1083,6 +1089,89 @@ async function changed(p) {
   stage.addEventListener('pointerup', end);
   stage.addEventListener('pointercancel', () => { start = null; draft && draft.remove(); draft = null; });
 })();
+
+/* ---------- Ajuster le cadre à la main ---------- */
+const Adj = { page: null, q: null, drag: -1 };
+function openAdjust(p) {
+  Adj.page = p;
+  const isFull = p.plain || !p.quad;
+  Adj.q = (isFull ? [[0.1, 0.08], [0.9, 0.08], [0.9, 0.92], [0.1, 0.92]] : p.quad).map(c => c.slice());
+  showSheet('#adjustSheet');
+  openPageId = p.id;
+  const img = $('#adjImg');
+  img.onload = () => drawAdjust();
+  img.src = urlFor(p.id + ':s', p.source);
+  if (img.complete) drawAdjust();
+}
+function drawAdjust() {
+  const img = $('#adjImg');
+  const w = img.clientWidth, h = img.clientHeight;
+  if (!w) return;
+  const svg = $('#adjSvg');
+  svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  $('#adjPoly').setAttribute('points', Adj.q.map(([x, y]) => `${x * w},${y * h}`).join(' '));
+  document.querySelectorAll('#adjStage .h').forEach((el) => {
+    const [x, y] = Adj.q[+el.dataset.k];
+    el.style.left = x * w + 'px'; el.style.top = y * h + 'px';
+    el.classList.toggle('on', Adj.drag === +el.dataset.k);
+  });
+}
+(function adjustDrag() {
+  const stage = $('#adjStage');
+  const rel = (e) => {
+    const r = $('#adjImg').getBoundingClientRect();
+    return [Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), Math.min(1, Math.max(0, (e.clientY - r.top) / r.height))];
+  };
+  stage.addEventListener('pointerdown', (e) => {
+    if (!Adj.page) return;
+    const [x, y] = rel(e);
+    const r = $('#adjImg').getBoundingClientRect();
+    // le coin le plus proche du doigt (jusqu'à ~50 px)
+    let best = -1, bd = 1e9;
+    Adj.q.forEach(([qx, qy], i) => { const d = Math.hypot((qx - x) * r.width, (qy - y) * r.height); if (d < bd) { bd = d; best = i; } });
+    if (bd > 60) return;
+    Adj.drag = best; Adj.off = [Adj.q[best][0] - x, Adj.q[best][1] - y];
+    stage.setPointerCapture(e.pointerId);
+    drawAdjust();
+  });
+  stage.addEventListener('pointermove', (e) => {
+    if (Adj.drag < 0) return;
+    const [x, y] = rel(e);
+    Adj.q[Adj.drag] = [Math.min(1, Math.max(0, x + Adj.off[0])), Math.min(1, Math.max(0, y + Adj.off[1]))];
+    drawAdjust();
+  });
+  const end = () => { Adj.drag = -1; drawAdjust(); };
+  stage.addEventListener('pointerup', end);
+  stage.addEventListener('pointercancel', end);
+  window.addEventListener('resize', () => { if (openSheet === 'adjust') drawAdjust(); });
+})();
+$('#adjustOne').onclick = () => { const p = S.pages.find(x => x.id === openPageId); if (p && p.source) openAdjust(p); };
+$('#adjReset').onclick = () => { Adj.q = [[0, 0], [1, 0], [1, 1], [0, 1]]; drawAdjust(); };
+$('#adjOk').onclick = async () => {
+  const p = Adj.page; if (!p || !S.pages.includes(p)) return;
+  const quad = Vision.orderQuad(Adj.q.map(c => c.slice()));
+  closeSheets();
+  p.quad = quad; p.plain = false; p.edgeTouch = false; p.gutter = false;
+  p.status = 'busy'; p.ocrPending = false; p.kept = false;
+  if (p.upload.state === 'sending') p.upload.dirty = true;
+  renderStrip(); renderCounts();
+  try {
+    const bmp = await createImageBitmap(p.source);
+    const c = document.createElement('canvas'); c.width = bmp.width; c.height = bmp.height;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(bmp, 0, 0); bmp.close && bmp.close();
+    const img = ctx.getImageData(0, 0, c.width, c.height);
+    c.width = c.height = 1;
+    const opts = { locked: S.livret.size || null, textMode: S.set.textMode, maxLong: 3000, margin: 0.01 };
+    const res = await processor.req({ type: 'process', img, quad, opts }, [img.data.buffer]);
+    await onProcessed(p, res);
+    toast({ id: 'adj', kind: 'ok', title: `Page ${p.num} recadrée`, text: 'Nouvelle version envoyée à la place de l\'ancienne', ttl: 3000 });
+  } catch (err) {
+    console.error(err);
+    p.status = 'redo'; p.qRedo = ['erreur de recadrage'];
+    renderStrip(); renderCounts();
+  }
+};
 
 async function cropBlob(blob, box) {
   const bmp = await createImageBitmap(blob);

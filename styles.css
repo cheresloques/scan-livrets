@@ -198,3 +198,12 @@ select, input[type=text], input:not([type]), #clientId, #newLivret {
   .hint { top: calc(var(--safe-t) + 60px); }
 }
 .field select, .field input { flex: none; }
+
+/* Ajustement du cadre */
+.adj { position: relative; align-self: center; width: fit-content; max-width: 100%; touch-action: none; user-select: none; }
+.adj img { display: block; max-width: 100%; max-height: 64vh; border-radius: 6px; }
+.adj svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.adj polygon { fill: rgba(231, 196, 138, .14); stroke: var(--bronze-hi); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.adj .h { position: absolute; width: 34px; height: 34px; margin: -17px 0 0 -17px; border-radius: 50%; border: 3px solid var(--bronze-hi); background: rgba(7, 13, 24, .35); touch-action: none; }
+.adj .h::after { content: ""; position: absolute; left: 50%; top: 50%; width: 6px; height: 6px; margin: -3px 0 0 -3px; border-radius: 50%; background: var(--bronze-hi); }
+.adj .h.on { background: rgba(231, 196, 138, .35); }
