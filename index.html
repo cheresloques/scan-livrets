@@ -121,7 +121,14 @@
   <label class="field">Mode de prise
     <select id="pageMode">
       <option value="page">Une page à la fois (livret ouvert)</option>
-      <option value="double">Livret entier ou double page</option>
+      <option value="livret">Livret ouvert sur support : gauche puis droite</option>
+      <option value="double">Livret entier ou double page (une seule image)</option>
+    </select>
+  </label>
+  <label class="field" id="livretTurnField" hidden>Livret sur support : le haut des pages est
+    <select id="livretTurn">
+      <option value="gauche">à gauche de l'écran</option>
+      <option value="droite">à droite de l'écran</option>
     </select>
   </label>
   <label class="field">Version lecture
