@@ -59,10 +59,18 @@ self.onmessage = async (e) => {
       if (msg.fixedQuad) {
         det = { quad: msg.fixedQuad, areaFrac: 0.5, edgeTouch: false, sharp: sharpIn(msg.img, msg.fixedQuad) };
       } else {
-        det = Vision.detect(cv, msg.img, { mode: msg.mode || 'page' });
+        // mode livret (gauche puis droite) : on détecte la double page entière, la coupe se fait à la prise
+        const mode = msg.mode === 'livret' ? 'double' : (msg.mode || 'page');
+        det = Vision.detect(cv, msg.img, { mode });
       }
       const fp = det ? Vision.fingerprint(cv, msg.img, det.quad) : null;
       self.postMessage({ type: 'detect', id: msg.id, det, fp, w: msg.img.width, h: msg.img.height });
+      return;
+    }
+
+    if (msg.type === 'split') {
+      const r = Vision.splitSpread(cv, msg.img, msg.quad, msg.turn);
+      self.postMessage({ type: 'split', id: msg.id, left: r.left, right: r.right, t: r.t, found: r.found, rot: r.rot });
       return;
     }
 

@@ -289,6 +289,71 @@
     return result;
   };
 
+  /* Livret ouvert (mode « gauche puis droite ») : coupe un cadre de double page au niveau du pli.
+     img : image pleine résolution ; quadNorm : cadre 0..1 de la double page.
+     On redresse la double page en petit, on cherche la vallée sombre verticale près du milieu
+     (35-65 % de la largeur), puis on ramène la ligne de coupe dans la photo par la perspective.
+     Renvoie { left, right, t, found } (cadres 0..1, t = position du pli dans la largeur). */
+  V.splitSpread = function (cv, img, quadNorm, turn) {
+    const W = img.width, H = img.height;
+    let qn = quadNorm.map(p => p.slice());
+    // Téléphone en portrait au-dessus d'un livret ouvert : la double page est couchée dans la photo.
+    // On réordonne les coins pour que le redressement la remette à l'endroit.
+    // turn 'gauche' : le haut du livret est à gauche de la photo ; 'droite' : à droite.
+    let rot = 0;
+    {
+      const s0 = V.quadSize(qn.map(([x, y]) => [x * W, y * H]));
+      if (s0.h > s0.w) rot = turn === 'droite' ? 3 : 1;
+    }
+    for (let i = 0; i < rot; i++) qn = [qn[3], qn[0], qn[1], qn[2]];
+    const q = qn.map(([x, y]) => [x * W, y * H]);
+    const sw = 600, sh = Math.max(100, Math.round(sw / Math.max(0.5, (function () {
+      const s = V.quadSize(q); return s.w / s.h;
+    })())));
+    const src = cv.matFromImageData(img);
+    const gray = new cv.Mat();
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+    src.delete();
+    const flat = V._warpMat(cv, gray, q, sw, sh);
+    gray.delete();
+    const g = flat.data;
+    const y0 = Math.round(sh * 0.12), y1 = Math.round(sh * 0.88);
+    // profil : médiane de chaque colonne (robuste au texte et aux images)
+    const prof = new Float32Array(sw);
+    const col = new Uint8Array(y1 - y0);
+    for (let x = 0; x < sw; x++) {
+      for (let y = y0; y < y1; y++) col[y - y0] = g[y * sw + x];
+      col.sort();
+      prof[x] = col[col.length >> 1];
+    }
+    flat.delete();
+    let bestX = -1, bestS = 0;
+    const lo = Math.round(sw * 0.35), hi = Math.round(sw * 0.65);
+    for (const half of [6, 12, 20]) {
+      for (let x = Math.max(lo, half); x < Math.min(hi, sw - half); x++) {
+        const sc = Math.min(prof[x - half], prof[x + half]) - prof[x];
+        // léger bonus au centre : à valeur égale, le pli est plutôt au milieu
+        const s = sc * (1 - Math.abs(x / sw - 0.5));
+        if (s > bestS) { bestS = s; bestX = x; }
+      }
+    }
+    const sorted = Array.from(prof).sort((a, b) => a - b);
+    const med = sorted[sorted.length >> 1] || 1;
+    const found = bestX >= 0 && bestS > med * 0.04;
+    const t = found ? bestX / sw : 0.5;
+    // la colonne t du redressé correspond, dans la photo, à la droite qui joint ces deux points
+    const from = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, sw, 0, sw, sh, 0, sh]);
+    const to = cv.matFromArray(4, 1, cv.CV_32FC2, [].concat(...q));
+    const M = cv.getPerspectiveTransform(from, to);
+    const ps = cv.matFromArray(2, 1, cv.CV_32FC2, [t * sw, 0, t * sw, sh]);
+    const pd = new cv.Mat();
+    cv.perspectiveTransform(ps, pd, M);
+    const top = [pd.data32F[0] / W, pd.data32F[1] / H], bot = [pd.data32F[2] / W, pd.data32F[3] / H];
+    del(from, to, M, ps, pd);
+    const [a, b, c, d] = qn; // haut-gauche, haut-droit, bas-droit, bas-gauche (sens du livret)
+    return { left: [a, top, bot, d], right: [top, b, c, bot], t, found, rot };
+  };
+
   /* Petite empreinte (16×16 niveaux de gris) d'une zone, pour repérer un changement de page. */
   V.fingerprint = function (cv, img, quadNorm) {
     const W = img.width, H = img.height;

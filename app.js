@@ -3,7 +3,7 @@
    → version couleur + version lecture + illustrations → Google Drive. */
 'use strict';
 
-const VERSION = '1.6.0';
+const VERSION = '1.7.0';
 const CFG = window.SCAN_CONFIG || {};
 const $ = (s) => document.querySelector(s);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -53,7 +53,7 @@ const DB = {
 /* ---------- État ---------- */
 const S = {
   set: Object.assign({
-    livret: 'Cycle 3', project: 'Aeon Trespass', pageMode: 'page', textMode: 'contraste', ocr: true, auto: true, delay: 900,
+    livret: 'Cycle 3', project: 'Aeon Trespass', pageMode: 'page', livretTurn: 'gauche', textMode: 'contraste', ocr: true, auto: true, delay: 900,
     sound: true, clientId: CFG.clientId || ''
   }, LS.get('settings', {})),
   livret: null,          // fiche du livret courant
@@ -124,7 +124,9 @@ const sfx = {
   shutter() { beep(1800, 0.05, 0, 'square', 0.08); beep(900, 0.07, 0.05, 'square', 0.06); vib(30); },
   redo() { beep(440, 0.16); beep(330, 0.26, 0.18); vib([180, 80, 180]); },
   warn() { beep(660, 0.12, 0, 'triangle', 0.12); vib(60); },
-  ok() { beep(1320, 0.06, 0, 'sine', 0.06); }
+  ok() { beep(1320, 0.06, 0, 'sine', 0.06); },
+  // mode livret : les deux pages de la double page sont bonnes, on peut tourner
+  spread() { beep(880, 0.09, 0, 'sine', 0.16); beep(1320, 0.09, 0.11, 'sine', 0.16); beep(1760, 0.16, 0.22, 'sine', 0.16); vib([40, 60, 40]); }
 };
 function vib(p) { if (S.set.sound && navigator.vibrate) try { navigator.vibrate(p); } catch { /* */ } }
 document.addEventListener('pointerdown', ensureAudio, { passive: true });
@@ -247,6 +249,12 @@ function loop() {
     .then(onDetect).catch(e => console.warn(e)).finally(() => { detBusy = false; });
 }
 
+/* Message après la prise : en mode livret on attend le contrôle des deux pages. */
+function doneMsg() {
+  if (S.set.pageMode !== 'livret') return { t: 'Page prise ✓ — tourne la page', cls: '' };
+  return AC.spreadMsg || { t: 'Photo prise : vérification des 2 pages…', cls: '' };
+}
+
 function quadMove(a, b) {
   if (!a || !b) return 1;
   let m = 0;
@@ -268,14 +276,14 @@ function onDetect(r) {
     if (!AC.lostSince) AC.lostSince = now;
     if (!AC.armed && now - AC.lostSince > 350) AC.armed = true;
     draw(null);
-    hint(AC.armed ? 'Cadre le livret entier' : 'Page prise ✓ — tourne la page');
+    hint(AC.armed ? 'Cadre le livret entier' : doneMsg().t, AC.armed ? '' : doneMsg().cls);
     return;
   }
   AC.lostSince = 0;
   S.lastDet = det; S.lastDetAt = now;
 
   // changement de page détecté → on réarme
-  if (!AC.armed && AC.captureFp && Vision.fpDiff(r.fp, AC.captureFp) > 12) AC.armed = true;
+  if (!AC.armed && AC.captureFp && Vision.fpDiff(r.fp, AC.captureFp) > 12) { AC.armed = true; AC.spreadMsg = null; }
 
   const move = S.frameLock
     ? (AC.prevFp && Vision.fpDiff(r.fp, AC.prevFp) < 4 ? 0 : 1)
@@ -285,20 +293,21 @@ function onDetect(r) {
   else AC.sharpMax = Math.max(AC.sharpMax, det.sharp);
 
   const asp = quadAspectPx(det.quad, r.w, r.h);
-  const ref = S.livret && S.livret.aspect;
+  // en mode livret, le cadre est une double page : deux fois plus large qu'une page
+  const ref = S.livret && S.livret.aspect && S.livret.aspect * (S.set.pageMode === 'livret' ? 2 : 1);
   const aspectOff = ref && !S.frameLock ? Math.abs(asp - ref) / ref > 0.15 : false;
 
   let state = 'track', msg = '';
-  if (!AC.armed) { state = 'done'; msg = 'Page prise ✓ — tourne la page'; }
+  if (!AC.armed) { state = 'done'; msg = doneMsg().t; }
   else if (det.edgeTouch) { state = 'bad'; msg = 'Recule un peu : la page touche le bord'; }
-  else if (aspectOff) { state = 'odd'; msg = 'Format inattendu : cadre bien une page'; }
+  else if (aspectOff) { state = 'odd'; msg = S.set.pageMode === 'livret' ? 'Format inattendu : cadre bien la double page' : 'Format inattendu : cadre bien une page'; }
   else if (!S.set.auto) { state = 'track'; msg = 'Appuie sur le déclencheur'; }
   else { state = 'steady'; msg = 'Ne bouge plus…'; }
 
   const elapsed = now - AC.stableSince;
   const progress = Math.min(1, elapsed / S.set.delay);
   draw(det.quad, state, progress);
-  hint(msg, state === 'bad' ? 'stop' : state === 'steady' ? 'go' : '');
+  hint(msg, state === 'done' ? doneMsg().cls : state === 'bad' ? 'stop' : state === 'steady' ? 'go' : '');
 
   if (state === 'steady' && elapsed >= S.set.delay && det.sharp >= AC.sharpMax * 0.72 && !AC.busy) {
     capture(det, r.fp);
@@ -357,6 +366,41 @@ function nextNum() {
   return S.pages.reduce((m, p) => Math.max(m, p.num), 0) + 1;
 }
 
+function removeForRetake(old) {
+  S.pages = S.pages.filter(p => p !== old);
+  dismissToast(old.id);
+  DB.del('pages', old.id);
+}
+
+function newPage(num, quad, edgeTouch, gutter, plain, extra, old) {
+  old = old || null;
+  const page = Object.assign({
+    id: 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    livret: S.livret.name, num, created: Date.now(),
+    status: 'busy', qRedo: [], qWarn: [], ocrRedo: [], ocrWarn: [], kept: false,
+    images: [], ocr: null, edgeTouch, gutter, plain: !!plain,
+    upload: { state: 'none', fileIds: {}, prev: old ? Object.assign({}, old.upload.prev || {}, old.upload.fileIds || {}) : null },
+    previewUrl: small.toDataURL('image/jpeg', 0.6)
+  }, extra || {});
+  page.quad = quad;
+  S.pages.push(page);
+  S.pages.sort((a, b) => a.num - b.num);
+  renderStrip(page.id);
+  renderCounts();
+  return page;
+}
+
+function startProcess(page, img, quad, opts, sourceP) {
+  sourceP.then(b => { page.source = b; });
+  processor.req({ type: 'process', img, quad, opts }, [img.data.buffer])
+    .then(async res => { if (!page.source) page.source = await sourceP; return onProcessed(page, res); })
+    .catch(err => {
+      console.error(err);
+      page.status = 'redo'; page.qRedo = ['erreur de traitement'];
+      renderStrip(); renderCounts();
+    });
+}
+
 async function capture(det, fp, plain) {
   AC.busy = true;
   AC.armed = false;
@@ -381,29 +425,6 @@ async function capture(det, fp, plain) {
     setTimeout(() => { fl.hidden = true; }, 280);
     sfx.shutter();
 
-    const target = S.retakeQueue.length ? S.retakeQueue[0] : null;
-    const num = target || nextNum();
-    const old = target ? S.pages.find(p => p.num === target) : null;
-    const page = {
-      id: 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-      livret: S.livret.name, num, created: Date.now(),
-      status: 'busy', qRedo: [], qWarn: [], ocrRedo: [], ocrWarn: [], kept: false,
-      images: [], ocr: null, edgeTouch, gutter, plain: !!plain,
-      upload: { state: 'none', fileIds: {}, prev: old ? Object.assign({}, old.upload.prev || {}, old.upload.fileIds || {}) : null },
-      previewUrl: small.toDataURL('image/jpeg', 0.6)
-    };
-    if (old) {
-      S.pages = S.pages.filter(p => p !== old);
-      dismissToast(old.id);
-      DB.del('pages', old.id);
-      S.retakeQueue.shift();
-      renderRetake();
-    }
-    S.pages.push(page);
-    S.pages.sort((a, b) => a.num - b.num);
-    renderStrip(page.id);
-    renderCounts();
-
     const opts = {
       locked: plain ? null : (S.livret.size || null),
       textMode: S.set.textMode,
@@ -411,15 +432,45 @@ async function capture(det, fp, plain) {
       margin: plain ? 0 : 0.04,
       plain: !!plain
     };
-    page.quad = quad;
-    sourceP.then(b => { page.source = b; });
-    processor.req({ type: 'process', img, quad, opts }, [img.data.buffer])
-      .then(async res => { if (!page.source) page.source = await sourceP; return onProcessed(page, res); })
-      .catch(err => {
-        console.error(err);
-        page.status = 'redo'; page.qRedo = ['erreur de traitement'];
-        renderStrip(); renderCounts();
+
+    // Livret ouvert, téléphone fixe : une photo = deux pages (gauche puis droite)
+    if (S.set.pageMode === 'livret' && !plain) {
+      AC.spreadMsg = null;
+      const sp = await processor.req({ type: 'split', img: { width: img.width, height: img.height, data: img.data }, quad, turn: S.set.livretTurn || 'gauche' });
+      const spread = 's' + Date.now().toString(36);
+      // reprise d'une page d'une double page : on remplace les deux pages de cette double page
+      let nums = null;
+      const target = S.retakeQueue.length ? S.retakeQueue[0] : null;
+      const old = target ? S.pages.find(p => p.num === target) : null;
+      if (old && old.spread) {
+        const pair = S.pages.filter(p => p.spread === old.spread).sort((a, b) => a.num - b.num);
+        if (pair.length === 2) {
+          nums = pair.map(p => p.num);
+          for (const p of pair) removeForRetake(p);
+          S.retakeQueue = S.retakeQueue.filter(n => !nums.includes(n));
+          renderRetake();
+        }
+      }
+      if (!nums) { const n = nextNum(); nums = [n, n + 1]; }
+      const halves = [['g', sp.left], ['d', sp.right]];
+      halves.forEach(([side, q], i) => {
+        const im = i === 0 ? new ImageData(new Uint8ClampedArray(img.data), img.width, img.height) : img;
+        const page = newPage(nums[i], q, edgeTouch, false, false, { spread, side, gutterFound: sp.found, rot: sp.rot || 0 });
+        startProcess(page, im, q, opts, sourceP);
       });
+      return;
+    }
+
+    const target = S.retakeQueue.length ? S.retakeQueue[0] : null;
+    const num = target || nextNum();
+    const old = target ? S.pages.find(p => p.num === target) : null;
+    if (old) {
+      removeForRetake(old);
+      S.retakeQueue.shift();
+      renderRetake();
+    }
+    const page = newPage(num, quad, edgeTouch, gutter, plain, {}, old);
+    startProcess(page, img, quad, opts, sourceP);
   } finally {
     setTimeout(() => { AC.busy = false; }, 400);
   }
@@ -473,22 +524,31 @@ async function onProcessed(page, res) {
   if (!page.ocrPending) markForUpload(page);
   await savePage(page);
   renderStrip(); renderCounts();
-  notifyPage(page);
+  notifyPage(page, !!page.spread);
+  if (page.spread) notifySpread(page);
   if (page.ocrPending) queueOcr(page);
   pumpUploads();
 }
 
-function notifyPage(p) {
+function notifyPage(p, quiet) {
   const { redo, warn } = computeStatus(p);
   if (p.status === 'redo') {
-    sfx.redo();
+    if (!quiet) sfx.redo();
     toast({ id: p.id, kind: 'redo', title: `Page ${p.num} à refaire`, text: redo.join(' · '), img: thumbUrl(p), action: 'Refaire', onAction: () => setRetake([p.num]), onOpen: () => openPage(p) });
   } else if (p.status === 'warn' && !p.kept) {
-    sfx.warn();
+    if (!quiet) sfx.warn();
     toast({ id: p.id, kind: 'warn', title: `Page ${p.num} : à vérifier`, text: warn.join(' · '), img: thumbUrl(p), ttl: 4500, onOpen: () => openPage(p) });
-  } else {
+  } else if (!quiet) {
     sfx.ok();
   }
+}
+
+/* Mode livret : un seul signal quand les deux pages de la photo sont traitées. */
+function notifySpread(page) {
+  const pair = S.pages.filter(p => p.spread === page.spread);
+  if (pair.length < 2 || pair.some(p => p.status === 'busy')) return;
+  if (pair.some(p => p.status === 'redo')) { sfx.redo(); AC.spreadMsg = { t: 'Page à refaire : regarde l\u2019alerte', cls: 'stop' }; }
+  else { sfx.spread(); AC.spreadMsg = { t: '2 pages OK ✓ — tourne la page', cls: 'go' }; }
 }
 
 function thumbUrl(p) { return p.thumb ? urlFor(p.id + ':t', p.thumb) : (p.previewUrl || ''); }
@@ -1149,7 +1209,9 @@ $('#adjustOne').onclick = () => { const p = S.pages.find(x => x.id === openPageI
 $('#adjReset').onclick = () => { Adj.q = [[0, 0], [1, 0], [1, 1], [0, 1]]; drawAdjust(); };
 $('#adjOk').onclick = async () => {
   const p = Adj.page; if (!p || !S.pages.includes(p)) return;
-  const quad = Vision.orderQuad(Adj.q.map(c => c.slice()));
+  let quad = Vision.orderQuad(Adj.q.map(c => c.slice()));
+  // page issue d'une double page couchée : on garde le même sens de redressement
+  for (let i = 0; i < (p.rot || 0); i++) quad = [quad[3], quad[0], quad[1], quad[2]];
   closeSheets();
   p.quad = quad; p.plain = false; p.edgeTouch = false; p.gutter = false;
   p.status = 'busy'; p.ocrPending = false; p.kept = false;
@@ -1273,6 +1335,8 @@ function renderMenu() {
     sel.replaceChildren(...names.map(n => { const o = document.createElement('option'); o.value = n; o.textContent = n; o.selected = n === S.livret.name; return o; }));
   });
   $('#pageMode').value = S.set.pageMode || 'page';
+  $('#livretTurn').value = S.set.livretTurn || 'gauche';
+  $('#livretTurnField').hidden = S.set.pageMode !== 'livret';
   $('#textMode').value = S.set.textMode;
   $('#delay').value = String(S.set.delay);
   $('#ocr').checked = !!S.set.ocr;
@@ -1330,7 +1394,11 @@ $('#project').onchange = async (e) => {
   renderMenu();
 };
 $('#textMode').onchange = (e) => { S.set.textMode = e.target.value; saveSettings(); };
-$('#pageMode').onchange = (e) => { S.set.pageMode = e.target.value; saveSettings(); AC.stableSince = 0; };
+$('#pageMode').onchange = (e) => {
+  S.set.pageMode = e.target.value; saveSettings(); AC.stableSince = 0; AC.spreadMsg = null;
+  $('#livretTurnField').hidden = S.set.pageMode !== 'livret';
+};
+$('#livretTurn').onchange = (e) => { S.set.livretTurn = e.target.value; saveSettings(); };
 $('#delay').onchange = (e) => { S.set.delay = +e.target.value; saveSettings(); };
 $('#ocr').onchange = (e) => { S.set.ocr = e.target.checked; saveSettings(); };
 $('#sound').onchange = (e) => { S.set.sound = e.target.checked; saveSettings(); };
