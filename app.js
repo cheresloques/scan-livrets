@@ -3,7 +3,7 @@
    → version couleur + version lecture + illustrations → Google Drive. */
 'use strict';
 
-const VERSION = '1.7.0';
+const VERSION = '1.7.1';
 const CFG = window.SCAN_CONFIG || {};
 const $ = (s) => document.querySelector(s);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -692,7 +692,18 @@ const Drive = {
     await DB.put('livrets', liv);
     return f;
   },
+  /* Le fichier est-il encore dans ce dossier de travail (ni déplacé, ni à la corbeille) ?
+     Une session Claude range les pages traitées ailleurs : il ne faut plus y toucher. */
+  async stillIn(id, parent) {
+    const allowed = [].concat(parent).filter(Boolean);
+    try {
+      const r = await this.call(`https://www.googleapis.com/drive/v3/files/${id}?fields=parents,trashed`);
+      return !r.trashed && (r.parents || []).some(x => allowed.includes(x));
+    } catch (e) { if (e.status === 404) return false; throw e; }
+  },
   async upload(name, blob, parent, existingId) {
+    // fichier rangé ailleurs entre-temps : on en crée un nouveau dans le dossier de travail
+    if (existingId && !(await this.stillIn(existingId, parent))) existingId = null;
     const form = new FormData();
     const meta = existingId ? { name } : { name, parents: [parent] };
     form.append('metadata', new Blob([JSON.stringify(meta)], { type: 'application/json' }));
@@ -707,7 +718,9 @@ const Drive = {
     const r = await this.call('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', { method: 'POST', body: form });
     return r.id;
   },
-  async trash(id) {
+  async trash(id, parent) {
+    // ne jamais mettre à la corbeille un fichier qui a quitté le dossier de travail
+    if (parent && !(await this.stillIn(id, parent))) return;
     try {
       await this.call(`https://www.googleapis.com/drive/v3/files/${id}?fields=id`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trashed: true })
@@ -743,8 +756,11 @@ async function pumpUploads() {
   upBusy = true;
   try {
     // 1) ménage en attente
-    for (const id of TrashQ.all()) {
-      try { await Drive.trash(id); TrashQ.drop(id); reportDirty = true; }
+    const tq = TrashQ.all();
+    const work = tq.length ? await Drive.folders(S.livret) : null;
+    for (const id of tq) {
+      // seulement si le fichier est encore dans un dossier de travail (pas rangé dans « traités »)
+      try { await Drive.trash(id, [work.couleur, work.lecture, work.images, work.texte]); TrashQ.drop(id); reportDirty = true; }
       catch (e) { if (e.auth) return; console.warn('corbeille', e); break; }
     }
     // 2) envois
@@ -795,14 +811,14 @@ async function uploadPage(p) {
   ids.text = await Drive.upload(`p${n}.${p.textExt || 'jpg'}`, p.text, f.lecture, ids.text || prev.text);
   const oldImages = [...(ids.images || []), ...(prev.images || [])];
   ids.images = [];
-  for (const id of oldImages) await Drive.trash(id);
+  for (const id of oldImages) await Drive.trash(id, f.images);
   for (let i = 0; i < p.images.length; i++) {
     ids.images.push(await Drive.upload(`p${n}-img${i + 1}.jpg`, p.images[i].blob, f.images, null));
   }
   if (p.ocr && p.ocr.text) {
     ids.ocr = await Drive.upload(`p${n}.txt`, new Blob([p.ocr.text], { type: 'text/plain' }), f.texte, ids.ocr || prev.ocr);
   } else if (ids.ocr || prev.ocr) {
-    await Drive.trash(ids.ocr || prev.ocr); delete ids.ocr;
+    await Drive.trash(ids.ocr || prev.ocr, f.texte); delete ids.ocr;
   }
   delete p.upload.prev;
   p.upload.at = Date.now();
