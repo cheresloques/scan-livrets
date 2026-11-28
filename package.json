@@ -1,0 +1,19 @@
+{
+  "name": "scan-livrets",
+  "version": "1.8.0",
+  "private": true,
+  "description": "Appli Android (Capacitor) de Scan Livrets",
+  "scripts": {
+    "www": "node scripts/www.mjs",
+    "sync": "node scripts/www.mjs && npx cap sync android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.6.3",
+    "@capacitor/app": "^8.1.2",
+    "@capacitor/browser": "^8.0.5",
+    "@capacitor/core": "^8.6.3"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.6.3"
+  }
+}

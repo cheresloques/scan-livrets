@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scan Livrets : connexion</title>
+<style>
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #070d18; color: #e8edf5;
+         font: 16px/1.5 system-ui, sans-serif; text-align: center; padding: 16px; box-sizing: border-box; }
+  a { display: inline-block; margin-top: 16px; padding: 12px 22px; border-radius: 10px; background: #d4a64a; color: #070d18;
+      font-weight: 600; text-decoration: none; }
+</style>
+</head>
+<body>
+<div>
+  <p id="msg">Connexion à Google Drive réussie.</p>
+  <a id="back" href="#">Revenir à l'appli</a>
+</div>
+<script>
+/* Relais de connexion pour l'appli Android : Google renvoie ici le jeton (après le #),
+   la page le repasse à l'appli par son adresse scanlivrets://oauth. */
+(function () {
+  var h = location.hash.slice(1);
+  var back = document.getElementById('back');
+  if (!h) { document.getElementById('msg').textContent = 'Rien à transmettre.'; back.style.display = 'none'; return; }
+  if (/(^|&)error=/.test(h)) document.getElementById('msg').textContent = 'Connexion refusée ou annulée.';
+  var target = 'scanlivrets://oauth#' + h;
+  back.href = target;
+  location.replace(target);
+})();
+</script>
+</body>
+</html>
