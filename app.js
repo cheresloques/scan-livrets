@@ -3,7 +3,7 @@
    → version couleur + version lecture + illustrations → Google Drive. */
 'use strict';
 
-const VERSION = '1.7.1';
+const VERSION = '1.8.0';
 const CFG = window.SCAN_CONFIG || {};
 const $ = (s) => document.querySelector(s);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -618,6 +618,10 @@ async function pumpOcr() {
 }
 
 /* ---------- Google Drive ---------- */
+// appli Android (Capacitor) ou page web
+const NATIVE = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+const NativePlugins = NATIVE ? { Browser: Capacitor.registerPlugin('Browser'), App: Capacitor.registerPlugin('App') } : {};
+const OAUTH_RELAY = 'https://cheresloques.github.io/scan-livrets/oauth.html';
 const Drive = {
   scope: 'https://www.googleapis.com/auth/drive',
   client: null,
@@ -633,6 +637,7 @@ const Drive = {
     return true;
   },
   connect(prompt) {
+    if (NATIVE) return this.connectNative(prompt);
     return new Promise(async (res, rej) => {
       try { if (!(await this.init())) return rej(new Error('Identifiant client manquant')); }
       catch (e) { return rej(e); }
@@ -646,7 +651,42 @@ const Drive = {
       this.client.requestAccessToken({ prompt: prompt || '' });
     });
   },
+  /* Appli Android : la connexion Google se fait dans Chrome (onglet intégré), interdite dans la WebView.
+     Google renvoie le jeton à oauth.html (GitHub Pages), qui le repasse à l'appli par scanlivrets://oauth. */
+  connectNative(prompt) {
+    const { Browser, App } = NativePlugins;
+    return new Promise(async (res, rej) => {
+      const state = Math.random().toString(36).slice(2) + Date.now().toString(36);
+      let done = false, sub = null, subClose = null;
+      const finish = (fn, arg) => {
+        if (done) return; done = true;
+        if (sub) sub.remove(); if (subClose) subClose.remove();
+        Browser.close().catch(() => {});
+        fn(arg);
+      };
+      sub = await App.addListener('appUrlOpen', ({ url }) => {
+        if (!url || !url.startsWith('scanlivrets://oauth')) return;
+        const q = new URLSearchParams((url.split('#')[1] || url.split('?')[1] || ''));
+        if (q.get('state') !== state) return;
+        if (q.get('error')) return finish(rej, new Error(q.get('error') === 'access_denied' ? 'Connexion annulée' : q.get('error')));
+        this.tok = { t: q.get('access_token'), exp: Date.now() + (+q.get('expires_in') || 3600) * 1000 };
+        LS.set('drive.token', this.tok);
+        finish(res);
+      });
+      // onglet fermé à la main sans finir : on laisse un délai au retour du jeton
+      subClose = await Browser.addListener('browserFinished', () => setTimeout(() => finish(rej, new Error('Connexion annulée')), 1500));
+      const u = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+      u.search = new URLSearchParams({
+        client_id: S.set.clientId, redirect_uri: OAUTH_RELAY, response_type: 'token',
+        scope: this.scope, state, include_granted_scopes: 'true',
+        ...(prompt ? { prompt } : {})
+      }).toString();
+      try { await Browser.open({ url: u.href, toolbarColor: '#0a1220' }); }
+      catch (e) { finish(rej, e); }
+    });
+  },
   forget() {
+    if (NATIVE && this.tok) fetch('https://oauth2.googleapis.com/revoke?token=' + encodeURIComponent(this.tok.t), { method: 'POST' }).catch(() => {});
     if (this.tok && window.google && google.accounts) try { google.accounts.oauth2.revoke(this.tok.t, () => {}); } catch { /* */ }
     this.tok = null; LS.set('drive.token', null);
   },
@@ -1539,7 +1579,7 @@ async function exportZip() {
 (async function boot() {
   setToggle($('#autoBtn'), S.set.auto);
   await switchLivret(S.set.livret || 'Cycle 3');
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  if (!NATIVE && 'serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
   window.addEventListener('resize', () => draw(null));
   startCamera();
   setInterval(renderDrive, 30000);
